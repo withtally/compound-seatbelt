@@ -190,7 +190,7 @@ const call1 = {
 const call2 = {
   target: ensPublicResolverAddress, // ENS Public Resolver.
   calldata: ensPublicResolverInterface.encodeFunctionData('multicall',
-    [[optimism, arbitrum, avalanche, polygon, base, binance, celo, gnosis, boba, moonbeam, linea]]
+    [[optimism, arbitrum, avalanche, polygon, base, binance, celo, gnosis, boba, moonbeam, linea, scroll, rootstock, filecoin]]
   ),
   value: 0,
   signature: '',
