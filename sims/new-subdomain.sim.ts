@@ -5,25 +5,26 @@
  */
 import { SimulationConfigNew } from '../types'
 import { Interface } from '@ethersproject/abi'
-import { labelhash } from '@ensdomains/ensjs/utils/labels'
-import { namehash } from '@ensdomains/ensjs/utils/normalise'
+import { labelhash } from 'viem'
+import { namehash } from '@ensdomains/ensjs/utils'
+import ENSPublicResolverABI from '../utils/ABIs/ENSPublicResolverABI.json' assert { type: 'json' }
 
 
 // Get interfaces to facilitate encoding the calls we want to execute.
 const ensRegistryAbi = [
   'function setSubnodeRecord(bytes32 node, bytes32 label, address owner, address resolver, uint64 ttl) external',
 ]
-const ensPublicResolverAbi = ['function setText(bytes32 node, string calldata key, string calldata value) external']
+
 
 const ensRegistryInterface = new Interface(ensRegistryAbi)
-const ensPublicResolverInterface = new Interface(ensPublicResolverAbi)
+const ensPublicResolverInterface = new Interface(ENSPublicResolverABI)
 
 const ensRegistry = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'
 const ensPublicResolver = '0x4976fb03C32e5B8cfe2b6cCB31c09Ba78EBaBa41'
 const timelock = '0x1a9C8182C09F50C8318d769245beA52c32BE35BC'
 const nameHash = namehash("uniswap.eth")
-const labelHash = labelhash("v3deployments")
-const subnameHash = namehash("v3deployments.uniswap.eth")
+const labelHash = labelhash("v2deployments")
+const subnameHash = namehash("v2deployments.uniswap.eth")
 
 console.log({
   nameHash,
