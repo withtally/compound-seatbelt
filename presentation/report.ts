@@ -148,7 +148,15 @@ export async function generateAndSaveReports(
   await Promise.all([
     fsp.writeFile(`${path}.html`, htmlReport),
     fsp.writeFile(`${path}.md`, markdownReport),
-    mdToPdf({ content: markdownReport }, { dest: `${path}.pdf` }),
+    mdToPdf(
+      { content: markdownReport },
+      {
+        dest: `${path}.pdf`,
+        launch_options: {
+          args: process.env.CI ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
+        },
+      }
+    ),
   ])
 }
 
