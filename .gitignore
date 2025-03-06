@@ -15,4 +15,5 @@ crytic-export/
 # other
 trace*.json
 tenderly*.json
+new-response.json
 

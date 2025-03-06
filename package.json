@@ -2,14 +2,15 @@
   "name": "@uniswap/governance-seatbelt",
   "version": "1.0.0-alpha.0",
   "engines": {
-    "node": ">=14.16"
+    "bun": ">=1.0.0"
   },
   "type": "module",
   "description": "Make governance safer",
   "scripts": {
     "compile": "hardhat compile",
-    "start": "tsx index.ts",
-    "lint:fix": "prettier --write ."
+    "start": "bun run index.ts",
+    "lint:fix": "prettier --write .",
+    "test": "bun test"
   },
   "repository": {
     "type": "git",
@@ -46,6 +47,11 @@
     "viem": "^2.5.0"
   },
   "devDependencies": {
+    "bun-types": "latest",
     "prettier": "^2.3.2"
+  },
+  "module": "index.ts",
+  "peerDependencies": {
+    "typescript": "^5.0.0"
   }
 }

@@ -1,0 +1,7 @@
+[install]
+# Use the exact versions specified in package.json
+exact = true
+
+[test]
+# Include all files ending with .test.ts
+include = ["**/*.test.ts"] 

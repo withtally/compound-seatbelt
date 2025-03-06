@@ -19,6 +19,7 @@ Some notes on the outputs of reports:
 - If a transaction reverts, that will be reported in the state changes section
 - State changes and events around the proposal execution process, such as the `ExecuteTransaction` event and `queuedTransactions` state changes, are omitted from reports to reduce noise
 - Slither analysis for the timelock, governor proxy, and governor implementation is skipped to reduce noise in the output. Note that skipping analysis for the implementation on historical proposals requires an archive node, and a warning will be shown if archive data is required not available
+- ETH balance changes are reported in a dedicated section, showing transfers and net balance changes for each address involved
 
 ## Usage
 
@@ -64,9 +65,27 @@ GOVERNOR_ADDRESS=0x408ED6354d4973f66138C91495F2f2FCbd8724C3
 
 There are two modes of operation:
 
-1. Run `yarn start` to simulate and run checks on all Governor proposals.
-2. Alternatively, create a file called `<analysisName>.sim.ts` and run a specific simulation with `SIM_NAME=analysisName yarn start`. See the `*.sim.ts` files in the `sims` folder for examples.
+1. Run `bun start` to simulate and run checks on all Governor proposals.
+2. Alternatively, create a file called `<analysisName>.sim.ts` and run a specific simulation with `SIM_NAME=analysisName bun start`. See the `*.sim.ts` files in the `sims` folder for examples.
 
 When running either of those two modes locally, reports will be saved into a `reports/` folder in the root of the repository.
 The specific path will be `./reports/${daoName}/${governorAddress}/${proposalId}.${extension}`.
 The `reports/` folder is gitignored, so when searching for reports in this directory your editor may hide the files by default.
+
+### Running Tests
+
+To run the tests:
+
+```sh
+cd checks
+bun test
+```
+
+Or to run a specific test file:
+
+```sh
+cd checks
+bun test tests/check-eth-balance-changes.test.ts
+```
+
+Currently, there is a test for the ETH balance changes check, which verifies that the check correctly identifies and reports ETH transfers and balance changes. As new checks are added or existing checks are modified, corresponding tests should be added to ensure their functionality. The test framework is set up to use Bun's built-in testing capabilities and can be extended to cover additional checks in the future.
