@@ -1,4 +1,4 @@
-import { SimulationConfigProposed } from '../types'
+import type { SimulationConfigProposed } from '../types';
 
 export const config: SimulationConfigProposed = {
   type: 'proposed',
@@ -6,4 +6,4 @@ export const config: SimulationConfigProposed = {
   governorAddress: '0x408ED6354d4973f66138C91495F2f2FCbd8724C3',
   governorType: 'bravo',
   proposalId: 13,
-}
+};

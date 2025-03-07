@@ -1,15 +1,18 @@
 {
   "name": "@uniswap/governance-seatbelt",
   "version": "1.0.0-alpha.0",
-  "engines": {
-    "bun": ">=1.0.0"
-  },
   "type": "module",
   "description": "Make governance safer",
   "scripts": {
     "compile": "hardhat compile",
     "start": "bun run index.ts",
-    "lint:fix": "prettier --write .",
+    "typecheck": "tsc --noEmit",
+    "lint": "bun run typecheck && biome check .",
+    "lint:fix": "bun run typecheck && biome check --write .",
+    "format": "biome format .",
+    "format:fix": "biome format --write .",
+    "check": "bun run typecheck && biome check",
+    "check:fix": "bun run typecheck && biome check --write",
     "test": "bun test"
   },
   "repository": {
@@ -27,10 +30,7 @@
   },
   "homepage": "https://github.com/Uniswap/governance-seatbelt#readme",
   "dependencies": {
-    "@ensdomains/ensjs": "^3.2.0",
     "@octokit/action": "^3.15.2",
-    "@types/node": "^16.7.13",
-    "dotenv": "^10.0.0",
     "ethers": "^5.4.6",
     "md-to-pdf": "^5.1.0",
     "micro-ftch": "^0.3.1",
@@ -41,14 +41,11 @@
     "remark": "^14.0.2",
     "remark-rehype": "^10.1.0",
     "remark-toc": "^8.0.1",
-    "ts-node": "^10.8.1",
-    "tsx": "^4.7.0",
-    "typescript": "^4.7.3",
-    "viem": "^2.5.0"
+    "viem": "2.23.6"
   },
   "devDependencies": {
-    "bun-types": "latest",
-    "prettier": "^2.3.2"
+    "@biomejs/biome": "1.9.4",
+    "@types/bun": "latest"
   },
   "module": "index.ts",
   "peerDependencies": {

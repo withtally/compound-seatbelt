@@ -1,5 +1,5 @@
-import { Contract } from 'ethers'
-import { provider } from '../clients/ethers'
+import { Contract } from 'ethers';
+import { provider } from '../clients/ethers';
 
 const TIMELOCK_ABI = [
   'function executeTransaction(address target, uint256 value, string signature, bytes data, uint256 eta) payable returns (bytes)',
@@ -22,6 +22,6 @@ const TIMELOCK_ABI = [
   'event CancelTransaction(bytes32 indexed txHash, address indexed target, uint256 value, string signature, bytes data, uint256 eta)',
   'event ExecuteTransaction(bytes32 indexed txHash, address indexed target, uint256 value, string signature, bytes data, uint256 eta)',
   'event QueueTransaction(bytes32 indexed txHash, address indexed target, uint256 value, string signature, bytes data, uint256 eta)',
-]
+];
 
-export const timelock = (address: string) => new Contract(address, TIMELOCK_ABI, provider)
+export const timelock = (address: string) => new Contract(address, TIMELOCK_ABI, provider);

@@ -1,43 +1,45 @@
-import fs, { promises as fsp } from 'fs'
-import { Block } from '@ethersproject/abstract-provider'
-import { BigNumber } from 'ethers'
-import { remark } from 'remark'
-import remarkToc from 'remark-toc'
-import remarkParse from 'remark-parse'
-import remarkRehype from 'remark-rehype'
-import rehypeSanitize from 'rehype-sanitize'
-import rehypeStringify from 'rehype-stringify'
-import rehypeSlug from 'rehype-slug'
-import { visit } from 'unist-util-visit'
-import { unified } from 'unified'
-import { mdToPdf } from 'md-to-pdf'
-import { formatProposalId } from '../utils/contracts/governor'
-import { AllCheckResults, GovernorType, ProposalEvent } from '../types'
+import fs, { promises as fsp } from 'node:fs';
+import type { Block } from '@ethersproject/abstract-provider';
+import type { BigNumber } from 'ethers';
+import { mdToPdf } from 'md-to-pdf';
+import type { Link, Root } from 'mdast';
+import rehypeSanitize from 'rehype-sanitize';
+import rehypeSlug from 'rehype-slug';
+import rehypeStringify from 'rehype-stringify';
+import { remark } from 'remark';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import remarkToc from 'remark-toc';
+import { unified } from 'unified';
+import { visit } from 'unist-util-visit';
+import type { Visitor } from 'unist-util-visit';
+import type { AllCheckResults, GovernorType, ProposalEvent } from '../types';
+import { formatProposalId } from '../utils/contracts/governor';
 
 // --- Markdown helpers ---
 
-export function bullet(text: string, level: number = 0): string {
-  return `${' '.repeat(level * 4)}- ${text}`
+export function bullet(text: string, level = 0) {
+  return `${' '.repeat(level * 4)}- ${text}`;
 }
 
-export function bold(text: string): string {
-  return `**${text}**`
+export function bold(text: string) {
+  return `**${text}**`;
 }
 
-export function codeBlock(text: string): string {
+export function codeBlock(text: string) {
   // Line break, three backticks, line break, the text, line break, three backticks, line break
-  return `\n\`\`\`\n${text}\n\`\`\`\n`
+  return `\n\`\`\`\n${text}\n\`\`\`\n`;
 }
 
 /**
  * Block quotes a string in markdown
  * @param str string to block quote
  */
-export function blockQuote(str: string): string {
+export function blockQuote(str: string) {
   return str
     .split('\n')
-    .map((s) => '> ' + s)
-    .join('\n')
+    .map((s) => `> ${s}`)
+    .join('\n');
 }
 
 /**
@@ -45,14 +47,14 @@ export function blockQuote(str: string): string {
  * @param address to be linked
  * @param code whether to link to the code tab
  */
-export function toAddressLink(address: string, code: boolean = false): string {
-  return `[\`${address}\`](https://etherscan.io/address/${address}${code ? '#code' : ''})`
+export function toAddressLink(address: string, code = false) {
+  return `[\`${address}\`](https://etherscan.io/address/${address}${code ? '#code' : ''})`;
 }
 
 // -- Report formatters ---
 
 function toMessageList(header: string, text: string[]): string {
-  return text.length > 0 ? `${bold(header)}:\n\n` + text.map((msg) => `${msg}`).join('\n') : ''
+  return text.length > 0 ? `${bold(header)}:\n\n${text.map((msg) => `${msg}`).join('\n')}` : '';
 }
 
 /**
@@ -61,9 +63,16 @@ function toMessageList(header: string, text: string[]): string {
  * @param warnings the warnings returned by the check
  * @param name the descriptive name of the check
  */
-function toCheckSummary({ result: { errors, warnings, info }, name }: AllCheckResults[string]): string {
+function toCheckSummary({
+  result: { errors, warnings, info },
+  name,
+}: AllCheckResults[string]): string {
   const status =
-    errors.length === 0 ? (warnings.length === 0 ? '✅ Passed' : '❗❗ **Passed with warnings**') : '❌ **Failed**'
+    errors.length === 0
+      ? warnings.length === 0
+        ? '✅ Passed'
+        : '❗❗ **Passed with warnings**'
+      : '❌ **Failed**';
 
   return `### ${name} ${status}
 
@@ -72,7 +81,7 @@ ${toMessageList('Errors', errors)}
 ${toMessageList('Warnings', warnings)}
 
 ${toMessageList('Info', info)}
-`
+`;
 }
 
 /**
@@ -80,9 +89,9 @@ ${toMessageList('Info', info)}
  * @param description the proposal description
  */
 function getProposalTitle(description: string) {
-  const match = description.match(/^\s*#\s*(.*)\s*\n/)
-  if (!match || match.length < 2) return 'Title not found'
-  return match[1]
+  const match = description.match(/^\s*#\s*(.*)\s*\n/);
+  if (!match || match.length < 2) return 'Title not found';
+  return match[1];
 }
 
 /**
@@ -92,7 +101,7 @@ function getProposalTitle(description: string) {
 function formatTime(blockTimestamp: number): string {
   return `${new Date(blockTimestamp * 1000).toLocaleString('en-US', {
     timeZone: 'America/New_York',
-  })} ET`
+  })} ET`;
 }
 
 /**
@@ -101,8 +110,8 @@ function formatTime(blockTimestamp: number): string {
  * @param block the future block number
  */
 function estimateTime(current: Block, block: BigNumber): number {
-  if (block.lt(current.number)) throw new Error('end block is less than current')
-  return block.sub(current.number).mul(13).add(current.timestamp).toNumber()
+  if (block.lt(current.number)) throw new Error('end block is less than current');
+  return block.sub(current.number).mul(13).add(current.timestamp).toNumber();
 }
 
 /**
@@ -118,20 +127,20 @@ export async function generateAndSaveReports(
   blocks: { current: Block; start: Block | null; end: Block | null },
   proposal: ProposalEvent,
   checks: AllCheckResults,
-  dir: string
+  dir: string,
 ) {
   // Prepare the output folder and filename.
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  const id = formatProposalId(governorType, proposal.id!)
-  const path = `${dir}/${id}`
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const id = formatProposalId(governorType, proposal.id!);
+  const path = `${dir}/${id}`;
 
   // Generate the base markdown proposal report. This is the markdown report which is translated into other file types.
-  const baseReport = await toMarkdownProposalReport(governorType, blocks, proposal, checks)
+  const baseReport = await toMarkdownProposalReport(governorType, blocks, proposal, checks);
 
   // The table of contents' links in the baseReport work when converted to HTML, but do not work as Markdown
   // or PDF links, since the emojis in the header titles cause issues. We apply the remarkFixEmojiLinks plugin
   // to fix this, and use this updated version when generating the Markdown and PDF reports.
-  const markdownReport = String(await remark().use(remarkFixEmojiLinks).process(baseReport))
+  const markdownReport = String(await remark().use(remarkFixEmojiLinks).process(baseReport));
 
   // Generate the HTML report string using the `baseReport`.
   const htmlReport = String(
@@ -141,8 +150,8 @@ export async function generateAndSaveReports(
       .use(rehypeSanitize)
       .use(rehypeStringify)
       .use(rehypeSlug)
-      .process(baseReport)
-  )
+      .process(baseReport),
+  );
 
   // Save off all reports. The Markdown and PDF reports use the `markdownReport`.
   await Promise.all([
@@ -155,9 +164,9 @@ export async function generateAndSaveReports(
         launch_options: {
           args: process.env.CI ? ['--no-sandbox', '--disable-setuid-sandbox'] : [],
         },
-      }
+      },
     ),
-  ])
+  ]);
 }
 
 /**
@@ -170,25 +179,29 @@ async function toMarkdownProposalReport(
   governorType: GovernorType,
   blocks: { current: Block; start: Block | null; end: Block | null },
   proposal: ProposalEvent,
-  checks: AllCheckResults
+  checks: AllCheckResults,
 ): Promise<string> {
-  const { id, proposer, targets, endBlock, startBlock, description } = proposal
+  const { id, proposer, targets, endBlock, startBlock, description } = proposal;
 
   // Generate the report. We insert an empty table of contents header which is populated later using remark-toc.
   const report = `
 # ${getProposalTitle(description.trim())}
 
 _Updated as of block [${blocks.current.number}](https://etherscan.io/block/${blocks.current.number}) at ${formatTime(
-    blocks.current.timestamp
+    blocks.current.timestamp,
   )}_
 
 - ID: ${formatProposalId(governorType, id!)}
 - Proposer: ${toAddressLink(proposer)}
 - Start Block: ${startBlock} (${
-    blocks.start ? formatTime(blocks.start.timestamp) : formatTime(estimateTime(blocks.current, startBlock))
+    blocks.start
+      ? formatTime(blocks.start.timestamp)
+      : formatTime(estimateTime(blocks.current, startBlock))
   })
 - End Block: ${endBlock} (${
-    blocks.end ? formatTime(blocks.end.timestamp) : formatTime(estimateTime(blocks.current, endBlock))
+    blocks.end
+      ? formatTime(blocks.end.timestamp)
+      : formatTime(estimateTime(blocks.current, endBlock))
   })
 - Targets: ${targets.map((target) => toAddressLink(target, true)).join('; ')}
 
@@ -204,10 +217,10 @@ ${blockQuote(description.trim())}
 ${Object.keys(checks)
   .map((checkId) => toCheckSummary(checks[checkId]))
   .join('\n')}
-`
+`;
 
   // Add table of contents and return report.
-  return (await remark().use(remarkToc, { tight: true }).process(report)).toString()
+  return (await remark().use(remarkToc, { tight: true }).process(report)).toString();
 }
 
 /**
@@ -215,23 +228,18 @@ ${Object.keys(checks)
  * @dev This is a remark plugin, see the remark docs for more info on how it works.
  */
 function remarkFixEmojiLinks() {
-  return (tree: any) => {
-    visit(tree, (node) => {
-      if (node.type === 'link') {
-        // @ts-ignore node.url does exist, the typings just aren't correct
-        const url: string = node.url
-        const isInternalLink = url.startsWith('#')
-        if (isInternalLink && url.endsWith('--passed-with-warnings')) {
-          // @ts-ignore node.url does exist, the typings just aren't correct
-          node.url = node.url.replace('--passed-with-warnings', '-❗❗-passed-with-warnings')
-        } else if (isInternalLink && url.endsWith('--passed')) {
-          // @ts-ignore node.url does exist, the typings just aren't correct
-          node.url = node.url.replace('--passed', '-✅-passed')
-        } else if (isInternalLink && url.endsWith('--failed')) {
-          // @ts-ignore node.url does exist, the typings just aren't correct
-          node.url = node.url.replace('--failed', '-❌-failed')
+  return (tree: Root) => {
+    visit(tree, 'link', ((node: Link) => {
+      if (node.url) {
+        const isInternalLink = node.url.startsWith('#');
+        if (isInternalLink && node.url.endsWith('--passed-with-warnings')) {
+          node.url = node.url.replace('--passed-with-warnings', '-❗❗-passed-with-warnings');
+        } else if (isInternalLink && node.url.endsWith('--passed')) {
+          node.url = node.url.replace('--passed', '-✅-passed');
+        } else if (isInternalLink && node.url.endsWith('--failed')) {
+          node.url = node.url.replace('--failed', '-❌-failed');
         }
       }
-    })
-  }
+    }) as Visitor<Link>);
+  };
 }
