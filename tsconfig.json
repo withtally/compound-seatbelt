@@ -23,5 +23,16 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    ".git",
+    "reports",
+    "*.json",
+    "*.md",
+    "*.lock",
+    "frontend"
+  ]
 }

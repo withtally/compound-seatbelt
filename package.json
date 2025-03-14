@@ -13,7 +13,9 @@
     "format:fix": "biome format --write .",
     "check": "bun run typecheck && biome check",
     "check:fix": "bun run typecheck && biome check --write",
-    "test": "bun test"
+    "test": "bun test",
+    "sim": "bun start",
+    "propose": "bun run sim && cd frontend && bun dev"
   },
   "repository": {
     "type": "git",

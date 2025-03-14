@@ -704,3 +704,82 @@ interface RawElement {
   original: string;
   dirty: string;
 }
+
+/**
+ * Structured simulation report types
+ */
+export interface SimulationCheck {
+  title: string;
+  status: 'passed' | 'warning' | 'failed';
+  details?: string;
+  infoItems?: Array<{
+    label: string;
+    value: string;
+    isCode?: boolean;
+    isLink?: boolean;
+    href?: string;
+  }>;
+}
+
+export interface SimulationStateChange {
+  contract: string;
+  contractAddress?: string;
+  key: string;
+  oldValue: string;
+  newValue: string;
+}
+
+export interface SimulationEvent {
+  name: string;
+  contract: string;
+  contractAddress?: string;
+  params: Array<{
+    name: string;
+    value: string;
+    type: string;
+  }>;
+}
+
+export interface SimulationCalldata {
+  decoded: string;
+  raw: string;
+  links?: Array<{
+    text: string;
+    address: string;
+    href: string;
+  }>;
+}
+
+export interface StructuredSimulationReport {
+  title: string;
+  proposalText: string;
+  status: 'success' | 'warning' | 'error';
+  summary: string;
+  checks: SimulationCheck[];
+  stateChanges: SimulationStateChange[];
+  events: SimulationEvent[];
+  calldata?: SimulationCalldata;
+  metadata: {
+    blockNumber: string;
+    timestamp: string;
+    proposalId: string;
+    proposer: string;
+  };
+}
+
+export interface FrontendData {
+  proposalData: {
+    id: string;
+    targets: `0x${string}`[];
+    values: bigint[] | string[];
+    signatures: string[];
+    calldatas: `0x${string}`[];
+    description: string;
+  };
+  report: {
+    status: 'success' | 'warning' | 'error';
+    summary: string;
+    markdownReport: string;
+    structuredReport?: StructuredSimulationReport;
+  };
+}

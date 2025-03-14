@@ -21,6 +21,47 @@ Some notes on the outputs of reports:
 - Slither analysis for the timelock, governor proxy, and governor implementation is skipped to reduce noise in the output. Note that skipping analysis for the implementation on historical proposals requires an archive node, and a warning will be shown if archive data is required not available
 - ETH balance changes are reported in a dedicated section, showing transfers and net balance changes for each address involved
 
+## Proposing via Frontend
+
+This repository also includes a frontend application that allows you to visualize simulation results and create proposals.
+
+### Running the Frontend
+
+To run the frontend with simulation results:
+
+1. Run a simulation first:
+
+   ```sh
+   # run a specific simulation
+   SIM_NAME=uni-transfer bun run sim
+   ```
+
+2. Start the frontend:
+
+   ```sh
+   bun run propose
+   ```
+
+3. Or do both in one command:
+
+   ```sh
+   # Run specific simulation and start frontend
+   SIM_NAME=uni-transfer bun run propose
+   ```
+
+The frontend will be available at `http://localhost:3000`.
+
+### Creating Proposals
+
+The frontend allows you to:
+
+1. View simulation results including state changes, events, and checks the same way reports are visualized
+2. Connect your wallet to sign and submit proposals using the proposal data
+
+### Environment setup
+
+You will need to set up a `.env.local` file in the frontend folder according to the example [.env.local](/frontend/.env.local.example)
+
 ## Usage
 
 ### Adding DAOs to CI
