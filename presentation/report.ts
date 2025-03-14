@@ -198,18 +198,34 @@ function generateStructuredReport(
         continue;
       }
 
-      // Try to extract state changes from info messages
-      const stateChangeMatch = infoMsg.match(
+      // Try to extract mapping state changes from info messages
+      const mappingStateChangeMatch = infoMsg.match(
         /`(.+?)`\s+key\s+`(.+?)`\s+changed\s+from\s+`(.+?)`\s+to\s+`(.+?)`/,
       );
-      if (stateChangeMatch) {
+      if (mappingStateChangeMatch) {
         // Use the current contract name and address if available
         stateChanges.push({
-          contract: currentContract || stateChangeMatch[1],
+          contract: currentContract || mappingStateChangeMatch[1],
           contractAddress: currentContractAddress || undefined,
-          key: stateChangeMatch[2],
-          oldValue: stateChangeMatch[3],
-          newValue: stateChangeMatch[4],
+          key: mappingStateChangeMatch[2],
+          oldValue: mappingStateChangeMatch[3],
+          newValue: mappingStateChangeMatch[4],
+        });
+        continue;
+      }
+
+      // Try to extract simple type state changes from info messages
+      const simpleStateChangeMatch = infoMsg.match(
+        /`(.+?)`\s+changed\s+from\s+`(.+?)`\s+to\s+`(.+?)`/,
+      );
+      if (simpleStateChangeMatch) {
+        // Use the current contract name and address if available
+        stateChanges.push({
+          contract: currentContract,
+          contractAddress: currentContractAddress,
+          key: simpleStateChangeMatch[1],
+          oldValue: simpleStateChangeMatch[2],
+          newValue: simpleStateChangeMatch[3],
         });
       }
     }

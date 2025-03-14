@@ -14,7 +14,12 @@ export const checkStateChanges: ProposalCheck = {
     // Check if the transaction reverted, and if so return revert reason
     if (!sim.transaction.status) {
       const txInfo = sim.transaction.transaction_info;
-      const reason = txInfo.stack_trace ? txInfo.stack_trace[0].error_reason : 'unknown error';
+      const callTraceError = txInfo.call_trace.error_reason;
+      const reason = callTraceError
+        ? callTraceError
+        : txInfo.stack_trace
+          ? txInfo.stack_trace[0].error_reason
+          : 'unknown error';
       const error = `Transaction reverted with reason: ${reason}`;
       return { info: [], warnings: [], errors: [error] };
     }
@@ -27,6 +32,7 @@ export const checkStateChanges: ProposalCheck = {
       const warnings = 'State diff is empty';
       return { info: [], warnings: [warnings], errors: [] };
     }
+
     const stateDiffs = sim.transaction.transaction_info.state_diff.reduce(
       (diffs, diff) => {
         const addr = getAddress(diff.raw[0].address);
@@ -51,8 +57,11 @@ export const checkStateChanges: ProposalCheck = {
 
         // Skip diffs as required and add the rest to our diffs object
         if (shouldSkipDiff) return diffs;
-        if (!diffs[addr]) diffs[addr] = [diff];
-        diffs[addr].push(diff);
+        if (!diffs[addr]) {
+          diffs[addr] = [diff];
+        } else {
+          diffs[addr].push(diff);
+        }
         return diffs;
       },
       {} as Record<string, StateDiff[]>,
@@ -69,6 +78,9 @@ export const checkStateChanges: ProposalCheck = {
       const contract = sim.contracts.find((c) => c.address === address);
       info.push(bullet(getContractName(contract)));
 
+      // Track processed state changes to deduplicate
+      const processedChanges = new Set<string>();
+
       // Parse each diff. A single diff may involve multiple storage changes, e.g. a proposal that
       // executes three transactions will show three state changes to the `queuedTransactions`
       // mapping within a single `diff` element. We always JSON.stringify the values so structs
@@ -80,15 +92,23 @@ export const checkStateChanges: ProposalCheck = {
           for (const w of diff.raw) {
             const oldVal = JSON.stringify(w.original);
             const newVal = JSON.stringify(w.dirty);
-            info.push(bullet(`Slot \`${w.key}\` changed from \`${oldVal}\` to \`${newVal}\``, 1));
+            const changeKey = `${w.key}:${oldVal}:${newVal}`;
+            if (!processedChanges.has(changeKey)) {
+              info.push(bullet(`Slot \`${w.key}\` changed from \`${oldVal}\` to \`${newVal}\``, 1));
+              processedChanges.add(changeKey);
+            }
           }
         } else if (diff.soltype.simple_type) {
           // This is a simple type with a single changed value
           const oldVal = JSON.parse(JSON.stringify(diff.original));
           const newVal = JSON.parse(JSON.stringify(diff.dirty));
-          info.push(
-            bullet(`\`${diff.soltype.name}\` changed from \`${oldVal}\` to \`${newVal}\``, 1),
-          );
+          const changeKey = `${diff.soltype.name}:${oldVal}:${newVal}`;
+          if (!processedChanges.has(changeKey)) {
+            info.push(
+              bullet(`\`${diff.soltype.name}\` changed from \`${oldVal}\` to \`${newVal}\``, 1),
+            );
+            processedChanges.add(changeKey);
+          }
         } else if (diff.soltype.type.startsWith('mapping')) {
           // This is a complex type like a mapping, which may have multiple changes. The diff.original
           // and diff.dirty fields can be strings or objects, and for complex types they are objects,
@@ -103,12 +123,16 @@ export const checkStateChanges: ProposalCheck = {
           for (const k of keys) {
             const oldVal = JSON.stringify(original && k in original ? original[k] : '');
             const newVal = JSON.stringify(dirty && k in dirty ? dirty[k] : '');
-            info.push(
-              bullet(
-                `\`${diff.soltype?.name}\` key \`${k}\` changed from \`${oldVal}\` to \`${newVal}\``,
-                1,
-              ),
-            );
+            const changeKey = `${diff.soltype?.name}:${k}:${oldVal}:${newVal}`;
+            if (!processedChanges.has(changeKey)) {
+              info.push(
+                bullet(
+                  `\`${diff.soltype?.name}\` key \`${k}\` changed from \`${oldVal}\` to \`${newVal}\``,
+                  1,
+                ),
+              );
+              processedChanges.add(changeKey);
+            }
           }
         } else {
           // TODO arrays and nested mapping are currently not well supported -- find a transaction
@@ -118,10 +142,14 @@ export const checkStateChanges: ProposalCheck = {
           for (const w of diff.raw) {
             const oldVal = JSON.stringify(w.original);
             const newVal = JSON.stringify(w.dirty);
-            info.push(bullet(`Slot \`${w.key}\` changed from \`${oldVal}\` to \`${newVal}\``, 1));
-            warnings.push(
-              `Could not parse state: add support for formatting type ${diff.soltype?.type} (slot ${w.key})`,
-            );
+            const changeKey = `${w.key}:${oldVal}:${newVal}`;
+            if (!processedChanges.has(changeKey)) {
+              info.push(bullet(`Slot \`${w.key}\` changed from \`${oldVal}\` to \`${newVal}\``, 1));
+              warnings.push(
+                `Could not parse state: add support for formatting type ${diff.soltype?.type} (slot ${w.key})`,
+              );
+              processedChanges.add(changeKey);
+            }
           }
         }
       }

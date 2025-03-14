@@ -444,6 +444,7 @@ interface CallTrace {
   caller_pc: number;
   caller_op: string;
   call_type: string;
+  error_reason: string;
   from: From;
   from_balance: string;
   to: From;

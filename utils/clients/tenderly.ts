@@ -218,7 +218,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     throw new Error(`Cannot generate overrides for unknown governor type: ${governorType}`);
   }
 
-  const stateOverrides = {
+  const stateOverrides: StateOverridesPayload = {
     networkID: '1',
     stateOverrides: {
       [timelock.address]: {
@@ -444,7 +444,7 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     throw new Error(`Cannot generate overrides for unknown governor type: ${governorType}`);
   }
 
-  const stateOverrides = {
+  const stateOverrides: StateOverridesPayload = {
     networkID: '1',
     stateOverrides: {
       [timelock.address]: {
@@ -477,7 +477,7 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     gas: BLOCK_GAS_LIMIT,
     gas_price: '0',
     value: '0',
-    save_if_fails: false, // Set to true to save the simulation to your Tenderly dashboard if it fails.
+    save_if_fails: true, // Set to true to save the simulation to your Tenderly dashboard if it fails.
     save: false, // Set to true to save the simulation to your Tenderly dashboard if it succeeds.
     generate_access_list: true, // not required, but useful as a sanity check to ensure consistency in the simulation response
     block_header: {
