@@ -76,14 +76,14 @@ export interface ProposalStruct {
 }
 
 export interface ProposalEvent {
-  id?: BigNumber; // Bravo governor
-  proposalId?: BigNumber; // OZ governor
+  id: bigint;
+  proposalId: bigint;
   proposer: string;
-  startBlock: BigNumber;
-  endBlock: BigNumber;
+  startBlock: bigint;
+  endBlock: bigint;
   description: string;
   targets: string[];
-  values: BigNumber[];
+  values: bigint[] | undefined;
   signatures: string[];
   calldatas: string[];
 }

@@ -7,6 +7,9 @@ import { decodeFunctionWithAbi } from '../utils/clients/etherscan';
 import { getContractName } from '../utils/clients/tenderly';
 import { fetchTokenMetadata } from '../utils/contracts/erc20';
 
+// Cache for decoded function data to avoid redundant decoding
+const decodedFunctionCache: Record<string, { name: string; args: unknown[] }> = {};
+
 /**
  * Decodes proposal target calldata into a human-readable format
  */
@@ -30,7 +33,7 @@ export const checkDecodeCalldata: ProposalCheck = {
         if (!call) {
           // If we can't find the call in the trace, add a warning
           // Skip the warning for ETH transfers which might not appear in the trace
-          if (!(calldata === '0x' && BigInt(proposal.values[i].toString()) > 0n)) {
+          if (!(calldata === '0x' && BigInt(proposal.values?.[i].toString() ?? '0') > 0n)) {
             const msg = `Could not find matching call for target ${proposal.targets[i]} with calldata ${calldata}`;
             warnings.push(msg);
           }
@@ -40,7 +43,7 @@ export const checkDecodeCalldata: ProposalCheck = {
             from: deps.timelock.address,
             to: proposal.targets[i],
             input: calldata,
-            value: proposal.values[i].toString(),
+            value: proposal.values?.[i].toString() ?? '0',
           } as FluffyCall;
         } else {
           // If we found the call, check for subcalls with the same input data
@@ -197,14 +200,25 @@ async function prettifyCalldata(
   // Format the contract identifier using the contract information from the simulation
   const contractIdentifier = contract ? getContractName(contract) : `\`${target}\``;
 
+  // Check if we have a cached decoded function
+  const cacheKey = `${target}-${call.input}`;
+  if (decodedFunctionCache[cacheKey]) {
+    const decoded = decodedFunctionCache[cacheKey];
+    let description = `\`${call.from}\` calls \`${decoded.name}(`;
+    const formattedArgs = formatArgs(decoded.args);
+    if (formattedArgs) {
+      description += formattedArgs;
+    }
+    description += `)\` on ${contractIdentifier} (decoded from cache)`;
+    return description;
+  }
+
   // Try to decode using Etherscan ABI first
   try {
-    console.log(
-      `[DEBUG] Trying to decode using Etherscan ABI for ${target} with selector ${selector}`,
-    );
     const decoded = await decodeFunctionWithAbi(target, call.input as `0x${string}`);
     if (decoded) {
-      console.log(`[DEBUG] Successfully decoded using Etherscan ABI: ${decoded.name}`);
+      // Cache the decoded function
+      decodedFunctionCache[cacheKey] = decoded;
 
       // Format the decoded function call
       let description = `\`${call.from}\` calls \`${decoded.name}(`;
@@ -221,7 +235,6 @@ async function prettifyCalldata(
       return description;
     }
 
-    console.log(`[DEBUG] Failed to decode using Etherscan ABI for ${target}`);
     warnings.push(
       `Failed to decode function with selector ${selector} for contract ${target} using Etherscan ABI`,
     );
@@ -235,13 +248,11 @@ async function prettifyCalldata(
   // Handle token-related actions
   const isTokenAction = selector in TOKEN_HANDLERS;
   if (isTokenAction) {
-    console.log(`[DEBUG] Using token handler for selector ${selector}`);
     const { symbol, decimals } = await fetchTokenMetadata(call.to);
     return TOKEN_HANDLERS[selector](call, decimals || 0, symbol, contractIdentifier);
   }
 
   // Generic handling for non-token actions
-  console.log(`[DEBUG] Using generic handling for ${target} with selector ${selector}`);
   const sig = getSignature(call);
   return getDescription(contractIdentifier, sig, call);
 }

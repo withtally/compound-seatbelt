@@ -1,9 +1,6 @@
 'use client';
-
-import { ReportCard } from '@/components/ReportCard';
 import { StructuredReport } from '@/components/StructuredReport';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -14,7 +11,6 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Toaster } from '@/components/ui/sonner';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { type Proposal, useSimulationResults } from '@/hooks/use-simulation-results';
 import { useWriteProposeNew } from '@/hooks/use-write-propose-new';
 import { AlertTriangleIcon, CheckCircleIcon, InfoIcon } from 'lucide-react';

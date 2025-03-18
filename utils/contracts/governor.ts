@@ -111,7 +111,9 @@ export async function getProposalIds(
 
     // Remove proposals from GovernorAlpha based on the initial GovernorBravo proposal ID
     const initialProposalId = await governor.initialProposalId();
-    return allProposalIds.filter((id) => id.gt(initialProposalId));
+    return allProposalIds
+      .filter((id) => BigNumber.from(id).gt(initialProposalId))
+      .map((id) => BigNumber.from(id));
   }
 
   const governor = governorOz(address);
@@ -120,13 +122,15 @@ export async function getProposalIds(
     0,
     latestBlockNum,
   );
-  return proposalCreatedLogs.map((logs) => (logs.args as unknown as ProposalEvent).proposalId!);
+  return proposalCreatedLogs.map((logs) =>
+    BigNumber.from((logs.args as unknown as ProposalEvent).proposalId!),
+  );
 }
 
 export function getProposalId(proposal: ProposalEvent): BigNumber {
   const id = proposal.id || proposal.proposalId;
   if (!id) throw new Error(`Proposal ID not found for proposal: ${JSON.stringify(proposal)}`);
-  return id;
+  return BigNumber.from(id);
 }
 
 // Generate proposal ID, used when simulating new proposals.

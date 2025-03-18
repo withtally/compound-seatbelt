@@ -29,6 +29,30 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache proposal simulation results
+        uses: actions/cache@v4
+        with:
+          path: cache
+          key: ${{ runner.os }}-proposals-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-proposals-
+
+      - name: Cache ABIs
+        uses: actions/cache@v4
+        with:
+          path: cache/abis
+          key: ${{ runner.os }}-abis-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-abis-
+
+      - name: Cache reports
+        uses: actions/cache@v4
+        with:
+          path: reports
+          key: ${{ runner.os }}-reports-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-reports-
+
       - name: Install dependencies
         run: bun install
 

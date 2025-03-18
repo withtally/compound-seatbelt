@@ -105,14 +105,14 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
 
   const startBlock = BigNumber.from(latestBlock.number - 100); // arbitrarily subtract 100
   const proposal: ProposalEvent = {
-    id: proposalId, // Bravo governor
-    proposalId, // OZ governor (for simplicity we just include both ID formats)
+    id: proposalId.toBigInt(), // Bravo governor
+    proposalId: proposalId.toBigInt(), // OZ governor (for simplicity we just include both ID formats)
     proposer: DEFAULT_FROM,
-    startBlock,
-    endBlock: startBlock.add(1),
+    startBlock: startBlock.toBigInt(),
+    endBlock: startBlock.add(1).toBigInt(),
     description,
     targets,
-    values: values.map(BigNumber.from),
+    values: values.map((v) => BigNumber.from(v).toBigInt()),
     signatures,
     calldatas,
   };
@@ -126,7 +126,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   const from = DEFAULT_FROM;
 
   // Run simulation at the block right after the proposal ends.
-  const simBlock = proposal.endBlock!.add(1);
+  const simBlock = BigNumber.from(proposal.endBlock).add(1);
 
   // For OZ governors we arbitrarily choose execution time. For Bravo governors, we
   // compute the approximate earliest possible execution time based on governance parameters. This
@@ -502,8 +502,10 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
 
   const formattedProposal: ProposalEvent = {
     ...(proposalCreatedEvent.args as unknown as ProposalEvent),
-    values, // This does not get included otherwise, same reason why we use `proposalCreatedEvent.args![3]` above.
-    id: BigNumber.from(proposalId), // Make sure we always have an ID field
+    values: values.map((v) => v.toBigInt()), // This does not get included otherwise, same reason why we use `proposalCreatedEvent.args![3]` above.
+    id: BigNumber.from(proposalId).toBigInt(), // Make sure we always have an ID field
+    startBlock: BigNumber.from(proposalCreatedEvent.args?.startBlock).toBigInt(),
+    endBlock: BigNumber.from(proposalCreatedEvent.args?.endBlock).toBigInt(),
   };
 
   // Handle ETH transfers if needed
@@ -585,7 +587,9 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
 
   const formattedProposal: ProposalEvent = {
     ...proposal,
-    id: BigNumber.from(proposalId), // Make sure we always have an ID field
+    id: BigNumber.from(proposalId).toBigInt(), // Make sure we always have an ID field
+    startBlock: BigNumber.from(proposal.startBlock).toBigInt(),
+    endBlock: BigNumber.from(proposal.endBlock).toBigInt(),
   };
   const deps: ProposalData = {
     governor,

@@ -1,9 +1,7 @@
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type {
   SimulationCheck,
-  SimulationEvent,
   SimulationStateChange,
   StructuredSimulationReport,
 } from '@/hooks/use-simulation-results';
@@ -15,7 +13,6 @@ import {
   ExternalLinkIcon,
   InfoIcon,
 } from 'lucide-react';
-import Link from 'next/link';
 import type React from 'react';
 import { useMemo, useState } from 'react';
 

@@ -2,7 +2,6 @@ import fs, { promises as fsp, writeFileSync } from 'node:fs';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Block } from '@ethersproject/abstract-provider';
-import type { BigNumber } from 'ethers';
 import { mdToPdf } from 'md-to-pdf';
 import type { Link, Root } from 'mdast';
 import rehypeSanitize from 'rehype-sanitize';
@@ -17,12 +16,10 @@ import { visit } from 'unist-util-visit';
 import type { Visitor } from 'unist-util-visit';
 import type {
   AllCheckResults,
-  FrontendData,
   GovernorType,
   ProposalEvent,
   SimulationCalldata,
   SimulationCheck,
-  SimulationData,
   SimulationEvent,
   SimulationStateChange,
   StructuredSimulationReport,
@@ -122,9 +119,9 @@ function formatTime(blockTimestamp: number): string {
  * @param current the current block
  * @param block the future block number
  */
-function estimateTime(current: Block, block: BigNumber): number {
-  if (block.lt(current.number)) throw new Error('end block is less than current');
-  return block.sub(current.number).mul(13).add(current.timestamp).toNumber();
+function estimateTime(current: Block, block: bigint): number {
+  if (block < BigInt(current.number)) throw new Error('end block is less than current');
+  return Number(block - BigInt(current.number)) * 13 + current.timestamp;
 }
 
 /**
@@ -288,6 +285,71 @@ function generateStructuredReport(
 }
 
 /**
+ * @notice Write simulation results to frontend public directory for easy access
+ * @param governorType The type of governor contract
+ * @param blocks The relevant blocks for the proposal
+ * @param proposal The proposal details
+ * @param checks The check results
+ * @param markdownReport The full markdown report
+ */
+export function writeFrontendData(
+  governorType: GovernorType,
+  blocks: { current: Block; start: Block | null; end: Block | null },
+  proposal: ProposalEvent,
+  checks: AllCheckResults,
+  markdownReport: string,
+) {
+  // Only write frontend data if we're in proposal creation mode (SIM_NAME is set)
+  if (!process.env.SIM_NAME) {
+    return;
+  }
+
+  try {
+    // Extract the proposal data in the format expected by the frontend
+    const id = formatProposalId(governorType, proposal.id!);
+    const proposalData = {
+      id,
+      targets: proposal.targets.map((target) => target as `0x${string}`),
+      values: (proposal.values || []).map((value) => BigInt(value.toString())),
+      signatures: proposal.signatures,
+      calldatas: proposal.calldatas.map((data) => data as `0x${string}`),
+      description: proposal.description,
+    };
+
+    // Generate the structured report
+    const structuredReport = generateStructuredReport(governorType, blocks, proposal, checks);
+
+    // Create a simplified report structure for the frontend
+    const reportForFrontend = {
+      status: structuredReport.status,
+      summary: structuredReport.summary,
+      markdownReport,
+      structuredReport,
+    };
+
+    // Use the correct path to the frontend/public directory
+    const projectRoot = join(__dirname, '..');
+    const frontendPublicDir = join(projectRoot, 'frontend', 'public');
+
+    // Create the directory if it doesn't exist
+    if (!existsSync(frontendPublicDir)) {
+      mkdirSync(frontendPublicDir, { recursive: true });
+    }
+
+    // Write the frontend data
+    writeFileSync(
+      join(frontendPublicDir, 'simulation-results.json'),
+      JSON.stringify([{ proposalData, report: reportForFrontend }], (_, value) =>
+        typeof value === 'bigint' ? value.toString() : value,
+      ),
+    );
+    console.log('Frontend data written for proposal creation');
+  } catch (error) {
+    console.error('Error writing frontend data:', error);
+  }
+}
+
+/**
  * Generates the proposal report and saves Markdown, PDF, and HTML versions of it.
  * Also writes the report data to the frontend/public directory for easy access.
  * @param blocks the relevant blocks for the proposal.
@@ -342,34 +404,8 @@ export async function generateAndSaveReports(
     ),
   ]);
 
-  // Also write the report data to the frontend/public directory
-  try {
-    // Extract the proposal data in the format expected by the frontend
-    const proposalData = {
-      id: id,
-      targets: proposal.targets.map((target) => target as `0x${string}`),
-      values: proposal.values.map((value) => BigInt(value.toString())),
-      signatures: proposal.signatures,
-      calldatas: proposal.calldatas.map((data) => data as `0x${string}`),
-      description: proposal.description,
-    };
-
-    // Generate the structured report
-    const structuredReport = generateStructuredReport(governorType, blocks, proposal, checks);
-
-    // Create a simplified report structure for the frontend
-    const reportForFrontend = {
-      status: structuredReport.status,
-      summary: structuredReport.summary,
-      markdownReport, // Include the full markdown report
-      structuredReport, // Include the structured report
-    };
-
-    // Write the frontend data
-    writeFrontendData([{ proposalData, report: reportForFrontend }]);
-  } catch (error) {
-    console.error('Error writing frontend data:', error);
-  }
+  // Write frontend data if in proposal creation mode
+  writeFrontendData(governorType, blocks, proposal, checks, markdownReport);
 }
 
 /**
@@ -398,7 +434,7 @@ _Updated as of block [${blocks.current.number}](https://etherscan.io/block/${blo
 - Proposer: ${toAddressLink(proposer)}
 - Start Block: ${startBlock} (${
     blocks.start
-      ? formatTime(blocks.start.timestamp)
+      ? formatTime(Number(blocks.start.timestamp))
       : formatTime(estimateTime(blocks.current, startBlock))
   })
 - End Block: ${endBlock} (${
@@ -445,33 +481,4 @@ function remarkFixEmojiLinks() {
       }
     }) as Visitor<Link>);
   };
-}
-
-/*
- * @notice Write simulation results to frontend public directory for easy access
- * @param data The data to write to the frontend, containing proposalData and report
- */
-export function writeFrontendData(data: FrontendData[]) {
-  try {
-    // Use the correct path to the frontend/public directory
-    const projectRoot = join(__dirname, '..');
-    const frontendPublicDir = join(projectRoot, 'frontend', 'public');
-
-    // Create the directory if it doesn't exist
-    if (!existsSync(frontendPublicDir)) {
-      mkdirSync(frontendPublicDir, { recursive: true });
-      console.log(`Created directory: ${frontendPublicDir}`);
-    }
-
-    // Write the frontend data
-    writeFileSync(
-      join(frontendPublicDir, 'simulation-results.json'),
-      JSON.stringify(data, (_, value) => (typeof value === 'bigint' ? value.toString() : value), 2),
-    );
-    console.log(
-      `Simulation results written to ${join(frontendPublicDir, 'simulation-results.json')}`,
-    );
-  } catch (error) {
-    console.error('Error writing frontend data:', error);
-  }
 }
