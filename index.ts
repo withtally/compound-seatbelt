@@ -55,6 +55,38 @@ async function main() {
 
     const { sim, proposal, latestBlock } = await simulate(config);
     simOutputs.push({ sim, proposal, latestBlock, config, deps: proposalData });
+
+    // Run checks for the simulation
+    console.log(`Running checks for ${SIM_NAME} simulation...`);
+    const checkResults: AllCheckResults = Object.fromEntries(
+      await Promise.all(
+        Object.keys(ALL_CHECKS).map(async (checkId) => [
+          checkId,
+          {
+            name: ALL_CHECKS[checkId].name,
+            result: await ALL_CHECKS[checkId].checkProposal(proposal, sim, proposalData),
+          },
+        ]),
+      ),
+    );
+
+    // Generate reports
+    const [startBlock, endBlock] = await Promise.all([
+      proposal.startBlock <= latestBlock.number
+        ? provider.getBlock(Number(proposal.startBlock))
+        : null,
+      proposal.endBlock <= latestBlock.number ? provider.getBlock(Number(proposal.endBlock)) : null,
+    ]);
+
+    // Save reports
+    const dir = `./reports/${config.daoName}/${config.governorAddress}`;
+    await generateAndSaveReports(
+      governorType,
+      { start: startBlock, end: endBlock, current: latestBlock },
+      proposal,
+      checkResults,
+      dir,
+    );
   } else {
     // If no SIM_NAME is provided, we get proposals to simulate from the chain
     if (!GOVERNOR_ADDRESS) throw new Error('Must provide a GOVERNOR_ADDRESS');
