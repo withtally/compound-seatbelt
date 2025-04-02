@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getAddress } from '@ethersproject/address';
-import type { Abi } from 'viem';
+import { type Abi, getAddress } from 'viem';
 
 // Cache directory path - use a non-gitignored location
 const CACHE_DIR = join(process.cwd(), 'cache');

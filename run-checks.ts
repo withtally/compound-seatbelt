@@ -2,12 +2,11 @@
  * @notice Script to run checks for a specific proposal ID
  */
 
-import { getAddress } from '@ethersproject/address';
-import { BigNumber } from '@ethersproject/bignumber';
+import { getAddress } from 'viem';
 import ALL_CHECKS from './checks';
 import { generateAndSaveReports } from './presentation/report';
-import type { AllCheckResults, SimulationConfig } from './types';
-import { provider } from './utils/clients/ethers';
+import type { AllCheckResults, ProposalData, SimulationConfig } from './types';
+import { publicClient } from './utils/clients/client';
 import { simulate } from './utils/clients/tenderly';
 import { DAO_NAME, GOVERNOR_ADDRESS } from './utils/constants';
 import {
@@ -27,14 +26,14 @@ async function main() {
   if (!DAO_NAME) throw new Error('Must provide a DAO_NAME');
 
   // Set the proposal ID to check
-  const proposalId = process.argv[2] ? BigNumber.from(process.argv[2]) : BigNumber.from(81); // Default to 81 if no argument provided
+  const proposalId = process.argv[2] ? BigInt(process.argv[2]) : BigInt(81); // Default to 81 if no argument provided
 
   // Get governor type and contract
   const governorType = await inferGovernorType(GOVERNOR_ADDRESS);
   const governor = getGovernor(governorType, GOVERNOR_ADDRESS);
 
   // Get proposal state to determine simulation type
-  const state = await governor.state(proposalId);
+  const state = await governor.read.state([proposalId]);
   const stateStr = String(state) as keyof typeof PROPOSAL_STATES;
   const isExecuted = PROPOSAL_STATES[stateStr] === 'Executed';
   const simType = isExecuted ? 'executed' : 'proposed';
@@ -53,10 +52,10 @@ async function main() {
   };
 
   // Generate the proposal data and dependencies needed by checks
-  const proposalData = {
+  const proposalData: ProposalData = {
     governor,
-    provider,
     timelock: await getTimelock(governorType, governor.address),
+    publicClient,
   };
 
   // Run simulation
@@ -81,10 +80,12 @@ async function main() {
   // Generate markdown report
   console.log('Generating report...');
   const [startBlock, endBlock] = await Promise.all([
-    proposal.startBlock <= latestBlock.number
-      ? provider.getBlock(Number(proposal.startBlock))
+    proposal.startBlock <= (latestBlock.number ?? 0n)
+      ? publicClient.getBlock({ blockNumber: proposal.startBlock })
       : null,
-    proposal.endBlock <= latestBlock.number ? provider.getBlock(Number(proposal.endBlock)) : null,
+    proposal.endBlock <= (latestBlock.number ?? 0n)
+      ? publicClient.getBlock({ blockNumber: proposal.endBlock })
+      : null,
   ]);
 
   // Save markdown report to a file

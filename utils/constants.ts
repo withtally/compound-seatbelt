@@ -1,3 +1,5 @@
+import { getAddress } from 'viem';
+
 // Load environment variables.
 export const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY!;
 export const RPC_URL = process.env.RPC_URL!;
@@ -24,5 +26,7 @@ export const SIM_NAME = process.env.SIM_NAME ?? null;
 
 // Only required to scan for new proposals and simulate with GitHub Actions
 export const DAO_NAME = process.env.DAO_NAME ?? null;
-export const GOVERNOR_ADDRESS = process.env.GOVERNOR_ADDRESS ?? null;
+export const GOVERNOR_ADDRESS = process.env.GOVERNOR_ADDRESS
+  ? getAddress(process.env.GOVERNOR_ADDRESS)
+  : null;
 export const REPORTS_BRANCH = 'reports';

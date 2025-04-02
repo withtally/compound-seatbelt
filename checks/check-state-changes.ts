@@ -1,4 +1,4 @@
-import { getAddress } from '@ethersproject/address';
+import { getAddress } from 'viem';
 import { bullet } from '../presentation/report';
 import type { ProposalCheck, StateDiff } from '../types';
 import { getContractName } from '../utils/clients/tenderly';

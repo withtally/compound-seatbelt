@@ -1,6 +1,10 @@
-import { getAddress } from '@ethersproject/address';
-import { formatUnits } from '@ethersproject/units';
-import { decodeFunctionData, parseAbiItem, toFunctionSelector } from 'viem';
+import {
+  decodeFunctionData,
+  formatUnits,
+  getAddress,
+  parseAbiItem,
+  toFunctionSelector,
+} from 'viem';
 import { bullet } from '../presentation/report';
 import type { FluffyCall, ProposalCheck, TenderlyContract } from '../types';
 import { decodeFunctionWithAbi } from '../utils/clients/etherscan';
@@ -60,7 +64,7 @@ export const checkDecodeCalldata: ProposalCheck = {
       }),
     );
 
-    const info = descriptions.filter((d) => d !== null).map((d) => bullet(d as string));
+    const info = descriptions.filter((d) => d !== null).map((d) => bullet(d));
     return { info, warnings, errors: [] };
   },
 };
@@ -190,7 +194,7 @@ async function prettifyCalldata(
 ) {
   // Handle ETH transfers (empty calldata with value)
   if (call.input === '0x' && call.value && BigInt(call.value) > 0n) {
-    const ethAmount = formatUnits(call.value, 18);
+    const ethAmount = formatUnits(BigInt(call.value), 18);
     return `\`${call.from}\` transfers ${ethAmount} ETH to \`${target}\` (formatted)`;
   }
 
@@ -248,8 +252,8 @@ async function prettifyCalldata(
   // Handle token-related actions
   const isTokenAction = selector in TOKEN_HANDLERS;
   if (isTokenAction) {
-    const { symbol, decimals } = await fetchTokenMetadata(call.to);
-    return TOKEN_HANDLERS[selector](call, decimals || 0, symbol, contractIdentifier);
+    const { symbol, decimals } = await fetchTokenMetadata(call.to as `0x${string}`);
+    return TOKEN_HANDLERS[selector](call, decimals || 0, symbol ?? null, contractIdentifier);
   }
 
   // Generic handling for non-token actions

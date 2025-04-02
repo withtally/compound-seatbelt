@@ -52,7 +52,7 @@ describe('checkEthBalanceChanges', () => {
     // Update the config to set the values to 0 so that no ETH transfers occur
     const noEthTransferConfig: SimulationConfigNew = {
       ...simConfig,
-      values: simConfig.targets.map(() => 0),
+      values: simConfig.targets.map(() => 0n),
     };
 
     const simResult = await simulate(noEthTransferConfig);

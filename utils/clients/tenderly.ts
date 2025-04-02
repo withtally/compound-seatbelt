@@ -1,22 +1,19 @@
-import { defaultAbiCoder } from '@ethersproject/abi';
-import { getAddress } from '@ethersproject/address';
-import { BigNumber } from '@ethersproject/bignumber';
-import type { BigNumberish } from '@ethersproject/bignumber';
-import { hexStripZeros } from '@ethersproject/bytes';
-import { HashZero, Zero } from '@ethersproject/constants';
-import { keccak256 } from '@ethersproject/keccak256';
-import { toUtf8Bytes } from '@ethersproject/strings';
+import { writeFileSync } from 'node:fs';
 import mftch from 'micro-ftch';
 import type { FETCH_OPT } from 'micro-ftch';
-import { provider } from './ethers';
-
-const fetchUrl = mftch;
-
-import { writeFileSync } from 'node:fs';
+import type { Address } from 'viem';
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  getAddress,
+  keccak256,
+  toBytes,
+  toHex,
+  zeroHash,
+} from 'viem';
 import type {
   ProposalData,
   ProposalEvent,
-  ProposalStruct,
   SimulationConfig,
   SimulationConfigExecuted,
   SimulationConfigNew,
@@ -27,6 +24,7 @@ import type {
   TenderlyPayload,
   TenderlySimulation,
 } from '../../types';
+import { GOVERNOR_ABI } from '../abis/GovernorBravo';
 import {
   BLOCK_GAS_LIMIT,
   TENDERLY_ACCESS_TOKEN,
@@ -34,22 +32,25 @@ import {
   TENDERLY_ENCODE_URL,
   TENDERLY_SIM_URL,
 } from '../constants';
+import { GOVERNOR_OZ_ABI } from '../constants/abi';
 import {
   generateProposalId,
   getGovernor,
   getProposal,
-  getProposalId,
   getTimelock,
   getVotingToken,
   hashOperationBatchOz,
   hashOperationOz,
 } from '../contracts/governor';
+import { publicClient } from './client';
+
+const fetchUrl = mftch;
 
 const TENDERLY_FETCH_OPTIONS = {
   type: 'json',
   headers: { 'X-Access-Key': TENDERLY_ACCESS_TOKEN },
 };
-const DEFAULT_FROM = '0xD73a92Be73EfbFcF3854433A5FcbAbF9c1316073'; // arbitrary EOA not used on-chain
+const DEFAULT_FROM = '0xD73a92Be73EfbFcF3854433A5FcbAbF9c1316073' as Address; // arbitrary EOA not used on-chain
 
 type TenderlyError = {
   statusCode?: number;
@@ -88,31 +89,28 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     throw new Error('targets and calldatas must be the same length');
 
   // --- Get details about the proposal we're simulating ---
-  const network = await provider.getNetwork();
-  const blockNumberToUse = (await getLatestBlock(network.chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
-  const latestBlock = await provider.getBlock(blockNumberToUse);
+  const chainId = await publicClient.getChainId();
+  const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
+  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
   const governor = getGovernor(governorType, governorAddress);
+  const timelock = await getTimelock(governorType, governorAddress);
+  const proposalId = await generateProposalId(governorType, governorAddress, {
+    targets,
+    values,
+    calldatas,
+    description,
+  });
 
-  const [proposalId, timelock] = await Promise.all([
-    generateProposalId(governorType, governorAddress, {
-      targets,
-      values,
-      calldatas,
-      description,
-    }),
-    getTimelock(governorType, governorAddress),
-  ]);
-
-  const startBlock = BigNumber.from(latestBlock.number - 100); // arbitrarily subtract 100
+  const startBlock = latestBlock.number - 100n; // arbitrarily subtract 100
   const proposal: ProposalEvent = {
-    id: proposalId.toBigInt(), // Bravo governor
-    proposalId: proposalId.toBigInt(), // OZ governor (for simplicity we just include both ID formats)
+    id: proposalId, // Bravo governor
+    proposalId, // OZ governor (for simplicity we just include both ID formats)
     proposer: DEFAULT_FROM,
-    startBlock: startBlock.toBigInt(),
-    endBlock: startBlock.add(1).toBigInt(),
+    startBlock,
+    endBlock: startBlock + 1n,
     description,
     targets,
-    values: values.map((v) => BigNumber.from(v).toBigInt()),
+    values,
     signatures,
     calldatas,
   };
@@ -120,13 +118,13 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   // --- Prepare simulation configuration ---
   // Get voting token and total supply
   const votingToken = await getVotingToken(governorType, governorAddress, proposalId);
-  const votingTokenSupply = <BigNumber>await votingToken.totalSupply(); // used to manipulate vote count
+  const votingTokenSupply = await votingToken.read.totalSupply(); // used to manipulate vote count
 
   // Set `from` arbitrarily.
   const from = DEFAULT_FROM;
 
   // Run simulation at the block right after the proposal ends.
-  const simBlock = BigNumber.from(proposal.endBlock).add(1);
+  const simBlock = proposal.endBlock + 1n;
 
   // For OZ governors we arbitrarily choose execution time. For Bravo governors, we
   // compute the approximate earliest possible execution time based on governance parameters. This
@@ -137,16 +135,22 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   // block timestamp (represented by the `simTimestamp` variable below)
   const simTimestamp =
     governorType === 'bravo'
-      ? BigNumber.from(latestBlock.timestamp).add(simBlock.sub(proposal.endBlock!).mul(12))
-      : BigNumber.from(latestBlock.timestamp + 1);
+      ? latestBlock.timestamp + (simBlock - (proposal.endBlock ?? latestBlock.number)) * 12n
+      : latestBlock.timestamp + 1n;
   const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
 
   // Compute transaction hashes used by the Timelock
   const txHashes = targets.map((target, i) => {
     const [val, sig, calldata] = [values[i], signatures[i], calldatas[i]];
     return keccak256(
-      defaultAbiCoder.encode(
-        ['address', 'uint256', 'string', 'bytes', 'uint256'],
+      encodeAbiParameters(
+        [
+          { type: 'address' },
+          { type: 'uint256' },
+          { type: 'string' },
+          { type: 'bytes' },
+          { type: 'uint256' },
+        ],
         [target, val, sig, calldata, eta],
       ),
     );
@@ -160,13 +164,13 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
 
   if (governorType === 'oz') {
     const id = hashOperationBatchOz(
-      targets,
-      values,
-      calldatas,
-      HashZero,
-      keccak256(toUtf8Bytes(description)),
+      [...targets],
+      [...values],
+      [...calldatas],
+      zeroHash,
+      keccak256(toBytes(description)),
     );
-    timelockStorageObj[`_timestamps[${id.toHexString()}]`] = simTimestamp.toString();
+    timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
   }
 
   // Use the Tenderly API to get the encoded state overrides for governor storage
@@ -192,7 +196,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     };
 
     targets.forEach((target, i) => {
-      const value = BigNumber.from(values[i]).toString();
+      const value = BigInt(values[i]).toString();
       governorStateOverrides[`${proposalKey}.targets[${i}]`] = target;
       governorStateOverrides[`${proposalKey}.values[${i}]`] = value;
       governorStateOverrides[`${proposalKey}.signatures[${i}]`] = signatures[i];
@@ -202,7 +206,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     const proposalCoreKey = `_proposals[${proposalId.toString()}]`;
     const proposalVotesKey = `_proposalVotes[${proposalId.toString()}]`;
     governorStateOverrides = {
-      [`${proposalCoreKey}.voteEnd._deadline`]: simBlock.sub(1).toString(),
+      [`${proposalCoreKey}.voteEnd._deadline`]: (simBlock - 1n).toString(),
       [`${proposalCoreKey}.canceled`]: 'false',
       [`${proposalCoreKey}.executed`]: 'false',
       [`${proposalVotesKey}.forVotes`]: votingTokenSupply.toString(),
@@ -211,7 +215,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     };
 
     targets.forEach((target, i) => {
-      const id = hashOperationOz(target, values[i], calldatas[i], HashZero, HashZero);
+      const id = hashOperationOz(target, values[i], calldatas[i], zeroHash, zeroHash);
       governorStateOverrides[`_timestamps[${id}]`] = '2'; // must be > 1.
     });
   } else {
@@ -244,18 +248,25 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   //   - block.timestamp >= proposal.eta
   //   - block.timestamp <  proposal.eta + timelock.GRACE_PERIOD()
   //   - queuedTransactions[txHash] = true for each action in the proposal
-  const descriptionHash = keccak256(toUtf8Bytes(description));
+  const descriptionHash = keccak256(toBytes(description));
   const executeInputs =
     governorType === 'bravo'
-      ? [proposalId.toString()]
-      : [targets, values, calldatas, descriptionHash];
+      ? ([proposalId] as const)
+      : ([targets, values, calldatas, descriptionHash] as const);
+
+  const input = encodeFunctionData({
+    abi: governor.abi,
+    functionName: 'execute',
+    args: executeInputs,
+  });
+
   const simulationPayload: TenderlyPayload = {
     network_id: '1',
     // this field represents the block state to simulate against, so we use the latest block number
-    block_number: latestBlock.number,
+    block_number: Number(latestBlock.number),
     from: DEFAULT_FROM,
     to: governor.address,
-    input: governor.interface.encodeFunctionData('execute', executeInputs),
+    input,
     gas: BLOCK_GAS_LIMIT,
     gas_price: '0',
     value: '0', // We'll update this below if ETH transfers are needed
@@ -264,8 +275,8 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     generate_access_list: true, // not required, but useful as a sanity check to ensure consistency in the simulation response
     block_header: {
       // this data represents what block.number and block.timestamp should return in the EVM during the simulation
-      number: hexStripZeros(simBlock.toHexString()),
-      timestamp: hexStripZeros(simTimestamp.toHexString()),
+      number: toHex(simBlock),
+      timestamp: toHex(simTimestamp),
     },
     state_objects: {
       // Since gas price is zero, the sender needs no balance.
@@ -282,12 +293,9 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   };
 
   // Handle ETH transfers if needed
-  const totalValue = config.values.reduce<BigNumber>(
-    (sum, val) => BigNumber.from(sum).add(BigNumber.from(val)),
-    Zero,
-  );
+  const totalValue = config.values.reduce((sum, val) => sum + val, 0n);
 
-  if (!totalValue.isZero()) {
+  if (totalValue > 0n) {
     // If we need to send ETH, update the value and from address balance
     simulationPayload.value = totalValue.toString();
 
@@ -306,7 +314,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   const deps: ProposalData = {
     governor,
     timelock,
-    provider,
+    publicClient,
   };
 
   writeFileSync('new-response.json', JSON.stringify(sim, null, 2));
@@ -321,35 +329,39 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   const { governorAddress, governorType, proposalId } = config;
 
   // --- Get details about the proposal we're simulating ---
-  const network = await provider.getNetwork();
-  const blockNumberToUse = (await getLatestBlock(network.chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
-  const latestBlock = await provider.getBlock(blockNumberToUse);
-  const blockRange = [0, latestBlock.number];
+  const chainId = await publicClient.getChainId();
+  const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
+  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
+  const blockRange = [0n, latestBlock.number];
   const governor = getGovernor(governorType, governorAddress);
+  const timelock = await getTimelock(governorType, governorAddress);
+  const proposal = await getProposal(governorType, governorAddress, proposalId);
+  const abi = governorType === 'bravo' ? GOVERNOR_ABI : GOVERNOR_OZ_ABI;
 
-  const [_proposal, proposalCreatedLogs, timelock] = await Promise.all([
-    getProposal(governorType, governorAddress, proposalId),
-    governor.queryFilter(governor.filters.ProposalCreated(), ...blockRange),
-    getTimelock(governorType, governorAddress),
-  ]);
-  const proposal = <ProposalStruct>_proposal;
+  const proposalCreatedEvents = await publicClient.getContractEvents({
+    address: governorAddress,
+    abi,
+    eventName: 'ProposalCreated',
+    fromBlock: blockRange[0],
+    toBlock: blockRange[1],
+  });
 
-  const proposalCreatedEvent = proposalCreatedLogs.filter((log) => {
-    return getProposalId(log.args as unknown as ProposalEvent).eq(proposalId);
+  const proposalCreatedEvent = proposalCreatedEvents.filter((e) => {
+    const args = e.args;
+    if (governorType === 'bravo' && 'id' in args) {
+      return args.id === proposalId;
+    }
+    if (governorType === 'oz' && 'proposalId' in args) {
+      return args.proposalId === proposalId;
+    }
+    return false;
   })[0];
   if (!proposalCreatedEvent)
     throw new Error(`Proposal creation log for #${proposalId} not found in governor logs`);
-  const {
-    targets,
-    signatures: sigs,
-    calldatas,
-    description,
-  } = proposalCreatedEvent.args as unknown as ProposalEvent;
-
-  // Workaround an issue that ethers cannot decode the values properly.
-  // We know that the values are the 4th parameter in
-  // `ProposalCreated(proposalId, proposer, targets, values, signatures, calldatas, startBlock, endBlock, description)`
-  const values: BigNumber[] = proposalCreatedEvent.args![3];
+  const { targets, signatures: sigs, calldatas, description, values } = proposalCreatedEvent.args;
+  if (!targets || !values || !sigs || !calldatas || !description) {
+    throw new Error('Missing required proposal data in creation event');
+  }
 
   // --- Prepare simulation configuration ---
   // We need the following state conditions to be true to successfully simulate a proposal:
@@ -365,7 +377,7 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
 
   // Get voting token and total supply
   const votingToken = await getVotingToken(governorType, governorAddress, proposal.id);
-  const votingTokenSupply = <BigNumber>await votingToken.totalSupply(); // used to manipulate vote count
+  const votingTokenSupply = await votingToken.read.totalSupply(); // used to manipulate vote count
 
   // Set `from` arbitrarily.
   const from = DEFAULT_FROM;
@@ -373,7 +385,9 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   // For Bravo governors, we use the block right after the proposal ends, and for OZ
   // governors we arbitrarily use the next block number.
   const simBlock =
-    governorType === 'bravo' ? proposal.endBlock!.add(1) : BigNumber.from(latestBlock.number + 1);
+    governorType === 'bravo'
+      ? (proposal.endBlock ?? latestBlock.number) + 1n
+      : latestBlock.number + 1n;
 
   // For OZ governors we are given the earliest possible execution time. For Bravo governors, we
   // Compute the approximate earliest possible execution time based on governance parameters. This
@@ -384,16 +398,22 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   // block timestamp (represented by the `simTimestamp` variable below)
   const simTimestamp =
     governorType === 'bravo'
-      ? BigNumber.from(latestBlock.timestamp).add(simBlock.sub(proposal.endBlock!).mul(12))
-      : proposal.endTime!.add(1);
+      ? latestBlock.timestamp + (simBlock - (proposal.endBlock ?? latestBlock.number)) * 12n
+      : latestBlock.timestamp + 1n;
   const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
 
   // Compute transaction hashes used by the Timelock
   const txHashes = targets.map((target, i) => {
     const [val, sig, calldata] = [values[i], sigs[i], calldatas[i]];
     return keccak256(
-      defaultAbiCoder.encode(
-        ['address', 'uint256', 'string', 'bytes', 'uint256'],
+      encodeAbiParameters(
+        [
+          { type: 'address' },
+          { type: 'uint256' },
+          { type: 'string' },
+          { type: 'bytes' },
+          { type: 'uint256' },
+        ],
         [target, val, sig, calldata, eta],
       ),
     );
@@ -407,19 +427,18 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
 
   if (governorType === 'oz') {
     const id = hashOperationBatchOz(
-      targets,
-      values,
-      calldatas,
-      HashZero,
-      keccak256(toUtf8Bytes(description)),
+      [...targets],
+      [...values],
+      [...calldatas],
+      zeroHash,
+      keccak256(toBytes(description)),
     );
-    timelockStorageObj[`_timestamps[${id.toHexString()}]`] = simTimestamp.toString();
+    timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
   }
 
-  const proposalIdBn = BigNumber.from(proposalId);
   let governorStateOverrides: Record<string, string> = {};
   if (governorType === 'bravo') {
-    const proposalKey = `proposals[${proposalIdBn.toString()}]`;
+    const proposalKey = `proposals[${proposalId.toString()}]`;
     governorStateOverrides = {
       proposalCount: proposalId.toString(),
       [`${proposalKey}.eta`]: eta.toString(),
@@ -430,10 +449,10 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
       [`${proposalKey}.abstainVotes`]: '0',
     };
   } else if (governorType === 'oz') {
-    const proposalCoreKey = `_proposals[${proposalIdBn.toString()}]`;
-    const proposalVotesKey = `_proposalVotes[${proposalIdBn.toString()}]`;
+    const proposalCoreKey = `_proposals[${proposalId.toString()}]`;
+    const proposalVotesKey = `_proposalVotes[${proposalId.toString()}]`;
     governorStateOverrides = {
-      [`${proposalCoreKey}.voteEnd._deadline`]: simBlock.sub(1).toString(),
+      [`${proposalCoreKey}.voteEnd._deadline`]: (simBlock - 1n).toString(),
       [`${proposalCoreKey}.canceled`]: 'false',
       [`${proposalCoreKey}.executed`]: 'false',
       [`${proposalVotesKey}.forVotes`]: votingTokenSupply.toString(),
@@ -461,19 +480,23 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   // Note: The Tenderly API is sensitive to the input types, so all formatting below (e.g. stripping
   // leading zeroes, padding with zeros, strings vs. hex, etc.) are all intentional decisions to
   // ensure Tenderly properly parses the simulation payload
-  const descriptionHash = keccak256(toUtf8Bytes(description));
+  const descriptionHash = keccak256(toBytes(description));
   const executeInputs =
     governorType === 'bravo'
-      ? [proposalId.toString()]
-      : [targets, values, calldatas, descriptionHash];
+      ? ([proposalId] as const)
+      : ([targets, values, calldatas, descriptionHash] as const);
 
   const simulationPayload: TenderlyPayload = {
     network_id: '1',
     // this field represents the block state to simulate against, so we use the latest block number
-    block_number: latestBlock.number,
+    block_number: Number(latestBlock.number),
     from,
     to: governor.address,
-    input: governor.interface.encodeFunctionData('execute', executeInputs),
+    input: encodeFunctionData({
+      abi: governor.abi,
+      functionName: 'execute',
+      args: executeInputs,
+    }),
     gas: BLOCK_GAS_LIMIT,
     gas_price: '0',
     value: '0',
@@ -482,8 +505,8 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     generate_access_list: true, // not required, but useful as a sanity check to ensure consistency in the simulation response
     block_header: {
       // this data represents what block.number and block.timestamp should return in the EVM during the simulation
-      number: hexStripZeros(simBlock.toHexString()),
-      timestamp: hexStripZeros(simTimestamp.toHexString()),
+      number: toHex(simBlock),
+      timestamp: toHex(simTimestamp),
     },
     state_objects: {
       // Since gas price is zero, the sender needs no balance. If the sender does need a balance to
@@ -501,17 +524,22 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   };
 
   const formattedProposal: ProposalEvent = {
-    ...(proposalCreatedEvent.args as unknown as ProposalEvent),
-    values: values.map((v) => v.toBigInt()), // This does not get included otherwise, same reason why we use `proposalCreatedEvent.args![3]` above.
-    id: BigNumber.from(proposalId).toBigInt(), // Make sure we always have an ID field
-    startBlock: BigNumber.from(proposalCreatedEvent.args?.startBlock).toBigInt(),
-    endBlock: BigNumber.from(proposalCreatedEvent.args?.endBlock).toBigInt(),
+    id: proposalId,
+    proposalId,
+    proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_FROM,
+    startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
+    endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
+    description: proposalCreatedEvent.args.description ?? '',
+    targets: [...(proposalCreatedEvent.args.targets ?? [])],
+    values: [...values],
+    signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
+    calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
   };
 
   // Handle ETH transfers if needed
-  const totalValue = values.reduce((sum, cur) => sum.add(cur), Zero);
+  const totalValue = values.reduce((sum, cur) => sum + cur, 0n);
 
-  if (!totalValue.isZero()) {
+  if (totalValue > 0n) {
     // If we need to send ETH, update the value and from address balance
     simulationPayload.value = totalValue.toString();
 
@@ -530,7 +558,7 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
   const deps: ProposalData = {
     governor,
     timelock,
-    provider,
+    publicClient,
   };
 
   return { sim, proposal: formattedProposal, latestBlock, deps };
@@ -544,39 +572,61 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
   const { governorAddress, governorType, proposalId } = config;
 
   // --- Get details about the proposal we're analyzing ---
-  const latestBlock = await provider.getBlock('latest');
-  const blockRange = [0, latestBlock.number];
+  const latestBlockNumber = await publicClient.getBlockNumber();
+  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(latestBlockNumber) });
+  const blockRange = [0n, latestBlock.number];
   const governor = getGovernor(governorType, governorAddress);
   const timelock = await getTimelock(governorType, governorAddress);
 
-  const [createProposalLogs, proposalExecutedLogs] = await Promise.all([
-    governor.queryFilter(governor.filters.ProposalCreated(), ...blockRange),
-    governor.queryFilter(governor.filters.ProposalExecuted(), ...blockRange),
+  const [createProposalEvents, proposalExecutedEvents] = await Promise.all([
+    publicClient.getContractEvents({
+      address: governorAddress,
+      abi: governor.abi,
+      eventName: 'ProposalCreated',
+      fromBlock: blockRange[0],
+      toBlock: blockRange[1],
+    }),
+    publicClient.getContractEvents({
+      address: governorAddress,
+      abi: governor.abi,
+      eventName: 'ProposalExecuted',
+      fromBlock: blockRange[0],
+      toBlock: blockRange[1],
+    }),
   ]);
 
-  const proposalCreatedEvent = createProposalLogs.filter((log) => {
-    return getProposalId(log.args as unknown as ProposalEvent).eq(proposalId);
+  const proposalCreatedEvent = createProposalEvents.filter((e) => {
+    const args = e.args;
+    if (governorType === 'bravo' && 'id' in args) {
+      return args.id === proposalId;
+    }
+    if (governorType === 'oz' && 'proposalId' in args) {
+      return args.proposalId === proposalId;
+    }
   })[0];
-  if (!proposalCreatedEvent)
-    throw new Error(`Proposal creation log for #${proposalId} not found in governor logs`);
-  const proposal = proposalCreatedEvent.args as unknown as ProposalEvent;
 
-  const proposalExecutedEvent = proposalExecutedLogs.filter((log) => {
-    return getProposalId(log.args as unknown as ProposalEvent).eq(proposalId);
+  const proposal = proposalCreatedEvent.args;
+
+  const proposalExecutedEvent = proposalExecutedEvents.filter((e) => {
+    const args = e.args;
+    if (governorType === 'bravo' && 'id' in args) {
+      return args.id === proposalId;
+    }
+    if (governorType === 'oz' && 'proposalId' in args) {
+      return args.proposalId === proposalId;
+    }
   })[0];
-  if (!proposalExecutedEvent)
-    throw new Error(`Proposal execution log for #${proposalId} not found in governor logs`);
 
   // --- Simulate it ---
   // Prepare tenderly payload. Since this proposal was already executed, we directly use that transaction data
-  const tx = await provider.getTransaction(proposalExecutedEvent.transactionHash);
+  const tx = await publicClient.getTransaction({ hash: proposalExecutedEvent.transactionHash });
   const simulationPayload: TenderlyPayload = {
     network_id: String(tx.chainId) as TenderlyPayload['network_id'],
-    block_number: tx.blockNumber,
+    block_number: Number(tx.blockNumber),
     from: tx.from,
-    to: tx.to as string,
-    input: tx.data,
-    gas: tx.gasLimit.toNumber(),
+    to: tx.to ?? '',
+    input: tx.input,
+    gas: Number(tx.gas),
     gas_price: tx.gasPrice?.toString(),
     value: tx.value.toString(),
     save_if_fails: false, // Set to true to save the simulation to your Tenderly dashboard if it fails.
@@ -587,15 +637,23 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
 
   const formattedProposal: ProposalEvent = {
     ...proposal,
-    id: BigNumber.from(proposalId).toBigInt(), // Make sure we always have an ID field
-    startBlock: BigNumber.from(proposal.startBlock).toBigInt(),
-    endBlock: BigNumber.from(proposal.endBlock).toBigInt(),
+    id: proposalId,
+    proposalId: proposalId,
+    proposer: tx.from,
+    description: proposal.description ?? '',
+    targets: [...(proposal.targets ?? [])],
+    values: [...(proposal.values ?? [])],
+    signatures: [...(proposal.signatures ?? [])],
+    calldatas: [...(proposal.calldatas ?? [])],
+    startBlock: proposal.startBlock ?? 0n,
+    endBlock: proposal.endBlock ?? 0n,
   };
   const deps: ProposalData = {
     governor,
     timelock,
-    provider,
+    publicClient,
   };
+
   return { sim, proposal: formattedProposal, latestBlock, deps };
 }
 
@@ -627,10 +685,10 @@ export function getContractName(contract: TenderlyContract | undefined) {
  * Gets the latest block number known to Tenderly
  * @param chainId Chain ID to get block number for
  */
-async function getLatestBlock(chainId: BigNumberish): Promise<number> {
+async function getLatestBlock(chainId: number): Promise<number> {
   try {
     // Send simulation request
-    const url = `${TENDERLY_BASE_URL}/network/${BigNumber.from(chainId).toString()}/block-number`;
+    const url = `${TENDERLY_BASE_URL}/network/${(chainId).toString()}/block-number`;
     const fetchOptions = <Partial<FETCH_OPT>>{
       method: 'GET',
       ...TENDERLY_FETCH_OPTIONS,

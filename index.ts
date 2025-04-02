@@ -3,23 +3,23 @@
  */
 
 import { existsSync } from 'node:fs';
-import { getAddress } from '@ethersproject/address';
-import type { Contract } from 'ethers';
-import type { BigNumber } from 'ethers';
+import { getAddress } from 'viem';
 import ALL_CHECKS from './checks';
 import { generateAndSaveReports } from './presentation/report';
 import type {
   AllCheckResults,
   GovernorType,
+  ProposalData,
   SimulationConfig,
   SimulationConfigBase,
   SimulationData,
 } from './types';
 import { cacheProposal, getCachedProposal, needsSimulation } from './utils/cache/proposalCache';
-import { provider } from './utils/clients/ethers';
+import { publicClient } from './utils/clients/client';
 import { simulate } from './utils/clients/tenderly';
 import { DAO_NAME, GOVERNOR_ADDRESS, SIM_NAME } from './utils/constants';
 import {
+  type GetGovernorReturnType,
   formatProposalId,
   getGovernor,
   getProposalIds,
@@ -36,7 +36,7 @@ async function main() {
   // Prepare array to store all simulation outputs
   const simOutputs: SimulationData[] = [];
 
-  let governor: Contract;
+  let governor: GetGovernorReturnType | undefined;
   let governorType: GovernorType;
 
   // Determine if we are running a specific simulation or all on-chain proposals for a specified governor.
@@ -47,10 +47,11 @@ async function main() {
 
     governorType = await inferGovernorType(config.governorAddress);
     governor = getGovernor(governorType, config.governorAddress);
-    const proposalData = {
+
+    const proposalData: ProposalData = {
       governor,
-      provider,
-      timelock: await getTimelock(governorType, governor.address),
+      timelock: await getTimelock(governorType, config.governorAddress),
+      publicClient,
     };
 
     const { sim, proposal, latestBlock } = await simulate(config);
@@ -70,15 +71,16 @@ async function main() {
       ),
     );
 
-    // Generate reports
     const [startBlock, endBlock] = await Promise.all([
-      proposal.startBlock <= latestBlock.number
-        ? provider.getBlock(Number(proposal.startBlock))
+      proposal.startBlock <= (latestBlock.number ?? 0n)
+        ? publicClient.getBlock({ blockNumber: proposal.startBlock })
         : null,
-      proposal.endBlock <= latestBlock.number ? provider.getBlock(Number(proposal.endBlock)) : null,
+      proposal.endBlock <= (latestBlock.number ?? 0n)
+        ? publicClient.getBlock({ blockNumber: proposal.endBlock })
+        : null,
     ]);
 
-    // Save reports
+    // Generate reports
     const dir = `./reports/${config.daoName}/${config.governorAddress}`;
     await generateAndSaveReports(
       governorType,
@@ -91,21 +93,19 @@ async function main() {
     // If no SIM_NAME is provided, we get proposals to simulate from the chain
     if (!GOVERNOR_ADDRESS) throw new Error('Must provide a GOVERNOR_ADDRESS');
     if (!DAO_NAME) throw new Error('Must provide a DAO_NAME');
-    const latestBlock = await provider.getBlock('latest');
+    const latestBlock = await publicClient.getBlock();
+    if (!latestBlock.number) throw new Error('Failed to get latest block number');
 
     // Fetch all proposal IDs
     governorType = await inferGovernorType(GOVERNOR_ADDRESS);
     const proposalIds = await getProposalIds(governorType, GOVERNOR_ADDRESS, latestBlock.number);
     governor = getGovernor(governorType, GOVERNOR_ADDRESS);
 
-    // If we aren't simulating all proposals, filter down to just the active ones. For now we
-    // assume we're simulating all by default
-    const states = await Promise.all(proposalIds.map((id) => governor.state(id)));
-    const simProposals: { id: BigNumber; simType: SimulationConfigBase['type']; state: string }[] =
+    if (!governor) throw new Error('Failed to get governor');
+
+    const states = await Promise.all(proposalIds.map((id) => governor?.read.state([id])));
+    const simProposals: { id: bigint; simType: SimulationConfigBase['type']; state: string }[] =
       proposalIds.map((id, i) => {
-        // If state is `Executed` (state 7), we use the executed sim type and effectively just
-        // simulate the real transaction. For all other states, we use the `proposed` type because
-        // state overrides are required to simulate the transaction
         const stateNum = String(states[i]) as keyof typeof PROPOSAL_STATES;
         const stateStr = PROPOSAL_STATES[stateNum] || 'Unknown';
         const isExecuted = stateStr === 'Executed';
@@ -116,7 +116,8 @@ async function main() {
         };
       });
 
-    // Filter proposals that need simulation based on cache status
+    // If we aren't simulating all proposals, filter down to just the active ones. For now we
+    // assume we're simulating all by default
     const proposalsToSimulate = simProposals.filter((simProposal) =>
       needsSimulation({
         daoName: DAO_NAME!,
@@ -168,10 +169,10 @@ async function main() {
       );
 
       // Generate the proposal data and dependencies needed by checks
-      const proposalData = {
+      const proposalData: ProposalData = {
         governor,
-        provider,
         timelock: await getTimelock(governorType, governor.address),
+        publicClient,
       };
 
       for (const simProposal of proposalsToSimulate) {
@@ -212,11 +213,11 @@ async function main() {
 
         // Generate reports immediately
         const [startBlock, endBlock] = await Promise.all([
-          proposal.startBlock <= latestBlock.number
-            ? provider.getBlock(Number(proposal.startBlock))
+          proposal.startBlock <= (latestBlock.number ?? 0n)
+            ? publicClient.getBlock({ blockNumber: proposal.startBlock })
             : null,
-          proposal.endBlock <= latestBlock.number
-            ? provider.getBlock(Number(proposal.endBlock))
+          proposal.endBlock <= (latestBlock.number ?? 0n)
+            ? publicClient.getBlock({ blockNumber: proposal.endBlock })
             : null,
         ]);
 
@@ -235,11 +236,11 @@ async function main() {
         simOutputs.push(simulationData);
 
         // Cache the simulation results with check results included
-        cacheProposal(
-          DAO_NAME,
-          GOVERNOR_ADDRESS,
-          simProposal.id.toString(),
-          simProposal.state,
+        await cacheProposal(
+          config.daoName,
+          config.governorAddress,
+          proposal.id.toString(),
+          '1', // State 1 is "Active" for both Bravo and OZ governors
           simulationData,
         );
 

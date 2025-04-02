@@ -1,4 +1,4 @@
-import type { JsonRpcProvider } from '@ethersproject/providers';
+import { type PublicClient, getAddress } from 'viem';
 import { bullet, toAddressLink } from '../presentation/report';
 import type { ProposalCheck } from '../types';
 
@@ -9,12 +9,12 @@ export const checkTargetsNoSelfdestruct: ProposalCheck = {
   name: 'Check all targets do not contain selfdestruct',
   async checkProposal(proposal, _, deps) {
     const uniqueTargets = proposal.targets.filter(
-      (addr: string, i: number, targets: string[]) => targets.indexOf(addr) === i,
+      (addr, i, targets) => targets.indexOf(addr) === i,
     );
     const { info, warn, error } = await checkNoSelfdestructs(
       [deps.governor.address, deps.timelock.address],
-      uniqueTargets,
-      deps.provider,
+      uniqueTargets.map(getAddress),
+      deps.publicClient,
     );
     return { info, warnings: warn, errors: error };
   },
@@ -28,8 +28,8 @@ export const checkTouchedContractsNoSelfdestruct: ProposalCheck = {
   async checkProposal(_, sim, deps) {
     const { info, warn, error } = await checkNoSelfdestructs(
       [deps.governor.address, deps.timelock.address],
-      sim.transaction.addresses,
-      deps.provider,
+      sim.transaction.addresses.map(getAddress),
+      deps.publicClient,
     );
     return { info, warnings: warn, errors: error };
   },
@@ -39,15 +39,15 @@ export const checkTouchedContractsNoSelfdestruct: ProposalCheck = {
  * For a given simulation response, check if a set of addresses contain selfdestruct.
  */
 async function checkNoSelfdestructs(
-  trustedAddrs: string[],
-  addresses: string[],
-  provider: JsonRpcProvider,
+  trustedAddrs: `0x${string}`[],
+  addresses: `0x${string}`[],
+  publicClient: PublicClient,
 ): Promise<{ info: string[]; warn: string[]; error: string[] }> {
   const info: string[] = [];
   const warn: string[] = [];
   const error: string[] = [];
   for (const addr of addresses) {
-    const status = await checkNoSelfdestruct(trustedAddrs, addr, provider);
+    const status = await checkNoSelfdestruct(trustedAddrs, addr, publicClient);
     const address = toAddressLink(addr, false);
     if (status === 'eoa') info.push(bullet(`${address}: EOA`));
     else if (status === 'empty') warn.push(bullet(`${address}: EOA (may have code later)`));
@@ -78,16 +78,18 @@ const isPUSH = (opcode: number): boolean => opcode >= PUSH1 && opcode <= PUSH32;
  * For a given address, check if it's an EOA, a safe contract, or a contract contain selfdestruct.
  */
 async function checkNoSelfdestruct(
-  trustedAddrs: string[],
-  addr: string,
-  provider: JsonRpcProvider,
+  trustedAddrs: `0x${string}`[],
+  addr: `0x${string}`,
+  publicClient: PublicClient,
 ): Promise<'safe' | 'eoa' | 'empty' | 'selfdestruct' | 'delegatecall' | 'trusted'> {
   if (trustedAddrs.map((addr) => addr.toLowerCase()).includes(addr.toLowerCase())) return 'trusted';
 
   const [code, nonce] = await Promise.all([
-    provider.getCode(addr),
-    provider.getTransactionCount(addr),
+    publicClient.getCode({ address: addr }),
+    publicClient.getTransactionCount({ address: addr }),
   ]);
+
+  if (!code) return 'empty';
 
   // If there is no code and nonce is > 0 then it's an EOA.
   // If nonce is 0 it is an empty account that might have code later.

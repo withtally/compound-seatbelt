@@ -1,6 +1,5 @@
-import type { JsonRpcProvider } from '@ethersproject/providers';
-import type { BigNumber, BigNumberish, Block, Contract } from 'ethers';
-import type { Address } from 'viem';
+import type { Address, Block } from 'viem';
+import type { getGovernor, getTimelock } from './utils/contracts/governor';
 
 // --- Simulation configurations ---
 // TODO Consider refactoring to an enum instead of string.
@@ -9,7 +8,7 @@ export type GovernorType = 'oz' | 'bravo';
 interface SimulationConfigBase {
   type: 'executed' | 'proposed' | 'new';
   daoName: string; // e.g. 'Compound' or 'Uniswap'
-  governorAddress: string; // address of the governor
+  governorAddress: Address; // address of the governor
   governorType: GovernorType;
 }
 
@@ -25,10 +24,10 @@ export interface SimulationConfigProposed extends SimulationConfigBase {
 
 export interface SimulationConfigNew extends SimulationConfigBase {
   type: 'new';
-  targets: string[];
-  values: BigNumberish[];
-  signatures: string[];
-  calldatas: string[];
+  targets: Address[];
+  values: bigint[];
+  signatures: `0x${string}`[];
+  calldatas: `0x${string}`[];
   description: string;
 }
 
@@ -37,11 +36,13 @@ export type SimulationConfig =
   | SimulationConfigProposed
   | SimulationConfigNew;
 
+export type SimulationBlock = Pick<Block, 'number' | 'timestamp'>;
+
 export interface SimulationResult {
   sim: TenderlySimulation;
   proposal: ProposalEvent;
   deps: ProposalData;
-  latestBlock: Block;
+  latestBlock: SimulationBlock;
 }
 
 export interface SimulationData extends SimulationResult {
@@ -61,16 +62,16 @@ export type ProposalActions = [
 // TODO If adding support for a third governor, instead of hardcoding optional governor-specific
 // fields, make this a union type of each governor's individual proposal type.
 export interface ProposalStruct {
-  id: BigNumber;
+  id: bigint;
   proposer?: string;
-  eta: BigNumber;
-  startBlock?: BigNumber; // Compound governor
-  startTime?: BigNumber; // OZ governor
-  endBlock?: BigNumber; // Compound governor
-  endTime?: BigNumber; // OZ governor
-  forVotes: BigNumber;
-  againstVotes: BigNumber;
-  abstainVotes: BigNumber;
+  eta: bigint;
+  startBlock?: bigint; // Compound governor
+  startTime?: bigint; // OZ governor
+  endBlock?: bigint; // Compound governor
+  endTime?: bigint; // OZ governor
+  forVotes: bigint;
+  againstVotes: bigint;
+  abstainVotes: bigint;
   canceled: boolean;
   executed: boolean;
 }
@@ -83,7 +84,7 @@ export interface ProposalEvent {
   endBlock: bigint;
   description: string;
   targets: string[];
-  values: bigint[] | undefined;
+  values: bigint[];
   signatures: string[];
   calldatas: string[];
 }
@@ -97,9 +98,9 @@ export type CheckResult = {
 };
 
 export type ProposalData = {
-  governor: Contract;
-  timelock: Contract;
-  provider: JsonRpcProvider;
+  governor: ReturnType<typeof getGovernor>;
+  timelock: Awaited<ReturnType<typeof getTimelock>>;
+  publicClient: PublicClient;
 };
 
 export interface ProposalCheck {

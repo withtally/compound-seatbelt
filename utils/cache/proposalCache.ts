@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAddress } from 'viem';
-import type { SimulationData } from '../../types';
-import type { NeedsSimulationParams, ProposalCacheEntry } from './types';
+import type { SimulationBlock, SimulationData } from '../../types';
+import type { CachedBlock, NeedsSimulationParams, ProposalCacheEntry } from './types';
 
 // Cache directory path
 const CACHE_DIR = join(process.cwd(), 'cache');
@@ -10,6 +10,15 @@ const CACHE_DIR = join(process.cwd(), 'cache');
 // Ensure cache directory exists
 if (!existsSync(CACHE_DIR)) {
   mkdirSync(CACHE_DIR, { recursive: true });
+}
+
+// Custom replacer function to handle BigInt values
+// biome-ignore lint/suspicious/noExplicitAny: <explanation>
+function bigIntReplacer(_key: string, value: any) {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  return value;
 }
 
 function isValidCachedProposal(data: unknown): data is ProposalCacheEntry {
@@ -79,6 +88,10 @@ export function getCachedProposal(
     const proposalIdBigInt = BigInt(proposal.proposalId);
     const targets = proposal.targets.map((t) => getAddress(t));
     const values = proposal.values.map((v) => BigInt(v));
+    const latestBlock: SimulationBlock = {
+      number: BigInt(cachedData.latestBlock.number),
+      timestamp: BigInt(cachedData.latestBlock.timestamp),
+    };
 
     return {
       ...cachedData,
@@ -95,6 +108,7 @@ export function getCachedProposal(
         signatures: proposal.signatures,
         calldatas: proposal.calldatas,
       },
+      latestBlock,
     };
   } catch (error) {
     console.error(`[Cache] Error reading cache for proposal ${proposalId}:`, error);
@@ -105,13 +119,13 @@ export function getCachedProposal(
 /**
  * Caches simulation data for a proposal
  */
-export function cacheProposal(
+export async function cacheProposal(
   daoName: string,
   governorAddress: string,
   proposalId: string,
   proposalState: string | null,
   simulationData: SimulationData,
-): void {
+): Promise<void> {
   try {
     const cacheDir = join(CACHE_DIR, daoName, governorAddress);
     if (!existsSync(cacheDir)) {
@@ -133,18 +147,24 @@ export function cacheProposal(
       signatures: proposal.signatures,
       calldatas: proposal.calldatas,
     };
+    const cachedLatestBlock: CachedBlock = {
+      number: simulationData.latestBlock.number?.toString() ?? '0',
+      timestamp: simulationData.latestBlock.timestamp.toString(),
+    };
 
     const cachedData = {
       timestamp: Date.now(),
       proposalState,
       simulationData: {
-        ...simulationData,
+        sim: simulationData.sim,
         proposal: cachedProposal,
+        config: simulationData.config,
+        latestBlock: cachedLatestBlock,
       },
     };
 
     const cacheFile = join(cacheDir, `${proposalId}.json`);
-    writeFileSync(cacheFile, JSON.stringify(cachedData, null, 2));
+    writeFileSync(cacheFile, JSON.stringify(cachedData, bigIntReplacer, 2));
   } catch (error) {
     console.error(`Error caching proposal ${proposalId}:`, error);
   }

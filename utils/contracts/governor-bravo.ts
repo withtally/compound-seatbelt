@@ -1,64 +1,13 @@
-import { hexZeroPad } from '@ethersproject/bytes';
-import { BigNumber, type BigNumberish, Contract } from 'ethers';
-import { provider } from '../clients/ethers';
+import type { Address } from 'viem';
+import { pad } from 'viem';
+import { getContract } from 'viem';
+import { GOVERNOR_ABI } from '../abis/GovernorBravo';
+import { publicClient } from '../clients/client';
 import { getSolidityStorageSlotUint, to32ByteHexString } from '../utils';
 
-const GOVERNOR_BRAVO_ABI = [
-  'event NewAdmin(address oldAdmin, address newAdmin)',
-  'event NewImplementation(address oldImplementation, address newImplementation)',
-  'event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin)',
-  'event ProposalCanceled(uint256 id)',
-  'event ProposalCreated(uint256 id, address proposer, address[] targets, uint256[] values, string[] signatures, bytes[] calldatas, uint256 startBlock, uint256 endBlock, string description)',
-  'event ProposalExecuted(uint256 id)',
-  'event ProposalQueued(uint256 id, uint256 eta)',
-  'event ProposalThresholdSet(uint256 oldProposalThreshold, uint256 newProposalThreshold)',
-  'event VoteCast(address indexed voter, uint256 proposalId, uint8 support, uint256 votes, string reason)',
-  'event VotingDelaySet(uint256 oldVotingDelay, uint256 newVotingDelay)',
-  'event VotingPeriodSet(uint256 oldVotingPeriod, uint256 newVotingPeriod)',
-  'function BALLOT_TYPEHASH() view returns (bytes32)',
-  'function DOMAIN_TYPEHASH() view returns (bytes32)',
-  'function MAX_PROPOSAL_THRESHOLD() view returns (uint256)',
-  'function MAX_VOTING_DELAY() view returns (uint256)',
-  'function MAX_VOTING_PERIOD() view returns (uint256)',
-  'function MIN_PROPOSAL_THRESHOLD() view returns (uint256)',
-  'function MIN_VOTING_DELAY() view returns (uint256)',
-  'function MIN_VOTING_PERIOD() view returns (uint256)',
-  'function _acceptAdmin()',
-  'function _initiate(uint256 proposalCount)',
-  'function _setPendingAdmin(address newPendingAdmin)',
-  'function _setProposalThreshold(uint256 newProposalThreshold)',
-  'function _setVotingDelay(uint256 newVotingDelay)',
-  'function _setVotingPeriod(uint256 newVotingPeriod)',
-  'function admin() view returns (address)',
-  'function cancel(uint256 proposalId)',
-  'function castVote(uint256 proposalId, uint8 support)',
-  'function castVoteBySig(uint256 proposalId, uint8 support, uint8 v, bytes32 r, bytes32 s)',
-  'function castVoteWithReason(uint256 proposalId, uint8 support, string reason)',
-  'function execute(uint256 proposalId) payable',
-  'function getActions(uint256 proposalId) view returns (address[] targets, uint256[] values, string[] signatures, bytes[] calldatas)',
-  'function getReceipt(uint256 proposalId, address voter) view returns (tuple(bool hasVoted, uint8 support, uint96 votes))',
-  'function implementation() view returns (address)',
-  'function initialProposalId() view returns (uint256)',
-  'function initialize(address timelock_, address uni_, uint256 votingPeriod_, uint256 votingDelay_, uint256 proposalThreshold_)',
-  'function latestProposalIds(address) view returns (uint256)',
-  'function name() view returns (string)',
-  'function pendingAdmin() view returns (address)',
-  'function proposalCount() view returns (uint256)',
-  'function proposalMaxOperations() view returns (uint256)',
-  'function proposalThreshold() view returns (uint256)',
-  'function proposals(uint256) view returns (uint256 id, address proposer, uint256 eta, uint256 startBlock, uint256 endBlock, uint256 forVotes, uint256 againstVotes, uint256 abstainVotes, bool canceled, bool executed)',
-  'function propose(address[] targets, uint256[] values, string[] signatures, bytes[] calldatas, string description) returns (uint256)',
-  'function queue(uint256 proposalId)',
-  'function quorumVotes() view returns (uint256)',
-  'function state(uint256 proposalId) view returns (uint8)',
-  'function timelock() view returns (address)',
-  'function uni() view returns (address)',
-  'function votingDelay() view returns (uint256)',
-  'function votingPeriod() view returns (uint256)',
-];
-
-export const governorBravo = (address: string) =>
-  new Contract(address, GOVERNOR_BRAVO_ABI, provider);
+export function governorBravo(address: Address) {
+  return getContract({ address, abi: GOVERNOR_ABI, client: publicClient });
+}
 
 // All possible states a proposal might be in.
 // These are defined by the `ProposalState` enum so when we fetch the state of a proposal ID
@@ -72,13 +21,13 @@ export const PROPOSAL_STATES = {
   '5': 'Queued',
   '6': 'Expired',
   '7': 'Executed',
-};
+} as const;
 
 /**
  * @notice Returns an object containing various GovernorBravo slots
  * @param id Proposal ID
  */
-export function getBravoSlots(proposalId: BigNumberish) {
+export function getBravoSlots(proposalId: bigint) {
   // Proposal struct slot offsets, based on the governor's proposal struct
   //     struct Proposal {
   //       uint id;
@@ -97,38 +46,32 @@ export function getBravoSlots(proposalId: BigNumberish) {
   //       bool executed;
   //       mapping (address => Receipt) receipts;
   //     }
-  const etaOffset = 2;
-  const targetsOffset = 3;
-  const valuesOffset = 4;
-  const signaturesOffset = 5;
-  const calldatasOffset = 6;
-  const forVotesOffset = 9;
-  const againstVotesOffset = 10;
-  const abstainVotesOffset = 11;
-  const canceledSlotOffset = 12; // this is packed with `executed`
+  const etaOffset = 2n;
+  const targetsOffset = 3n;
+  const valuesOffset = 4n;
+  const signaturesOffset = 5n;
+  const calldatasOffset = 6n;
+  const forVotesOffset = 9n;
+  const againstVotesOffset = 10n;
+  const abstainVotesOffset = 11n;
+  const canceledSlotOffset = 12n; // this is packed with `executed`
 
   // Compute and return slot numbers
   const proposalsMapSlot = '0xa'; // proposals ID to proposal struct mapping
   const proposalSlot = getSolidityStorageSlotUint(proposalsMapSlot, proposalId);
   return {
     proposalCount: to32ByteHexString('0x7'), // slot of the proposalCount storage variable
-    votingToken: '0x9', // slot of voting token, e.g. UNI, COMP  (getter is named after token, so can't generalize it that way),
+    votingToken: '0x9' as `0x${string}`, // slot of voting token, e.g. UNI, COMP  (getter is named after token, so can't generalize it that way),
     proposalsMap: proposalsMapSlot,
     proposal: proposalSlot,
-    canceled: hexZeroPad(BigNumber.from(proposalSlot).add(canceledSlotOffset).toHexString(), 32),
-    eta: hexZeroPad(BigNumber.from(proposalSlot).add(etaOffset).toHexString(), 32),
-    forVotes: hexZeroPad(BigNumber.from(proposalSlot).add(forVotesOffset).toHexString(), 32),
-    againstVotes: hexZeroPad(
-      BigNumber.from(proposalSlot).add(againstVotesOffset).toHexString(),
-      32,
-    ),
-    abstainVotes: hexZeroPad(
-      BigNumber.from(proposalSlot).add(abstainVotesOffset).toHexString(),
-      32,
-    ),
-    targets: hexZeroPad(BigNumber.from(proposalSlot).add(targetsOffset).toHexString(), 32),
-    values: hexZeroPad(BigNumber.from(proposalSlot).add(valuesOffset).toHexString(), 32),
-    signatures: hexZeroPad(BigNumber.from(proposalSlot).add(signaturesOffset).toHexString(), 32),
-    calldatas: hexZeroPad(BigNumber.from(proposalSlot).add(calldatasOffset).toHexString(), 32),
+    canceled: pad(`0x${(BigInt(proposalSlot) + canceledSlotOffset).toString(16)}`),
+    eta: pad(`0x${(BigInt(proposalSlot) + etaOffset).toString(16)}`),
+    forVotes: pad(`0x${(BigInt(proposalSlot) + forVotesOffset).toString(16)}`),
+    againstVotes: pad(`0x${(BigInt(proposalSlot) + againstVotesOffset).toString(16)}`),
+    abstainVotes: pad(`0x${(BigInt(proposalSlot) + abstainVotesOffset).toString(16)}`),
+    targets: pad(`0x${(BigInt(proposalSlot) + targetsOffset).toString(16)}`),
+    values: pad(`0x${(BigInt(proposalSlot) + valuesOffset).toString(16)}`),
+    signatures: pad(`0x${(BigInt(proposalSlot) + signaturesOffset).toString(16)}`),
+    calldatas: pad(`0x${(BigInt(proposalSlot) + calldatasOffset).toString(16)}`),
   };
 }

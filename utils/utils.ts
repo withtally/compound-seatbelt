@@ -1,7 +1,4 @@
-import { defaultAbiCoder } from '@ethersproject/abi';
-import { BigNumber, type BigNumberish } from '@ethersproject/bignumber';
-import { hexStripZeros, hexZeroPad } from '@ethersproject/bytes';
-import { keccak256 } from '@ethersproject/keccak256';
+import { encodeAbiParameters, keccak256, pad, trim } from 'viem';
 
 /**
  * @notice Returns the storage slot for a Solidity mapping with uint keys, given the slot of the mapping itself
@@ -10,10 +7,20 @@ import { keccak256 } from '@ethersproject/keccak256';
  * @param key Mapping key to find slot for
  * @returns Storage slot
  */
-export function getSolidityStorageSlotUint(mappingSlot: string, key: BigNumberish) {
+export function getSolidityStorageSlotUint(
+  mappingSlot: `0x${string}`,
+  key: bigint | `0x${string}`,
+) {
   // this will also work for address types, since address and uints are encoded the same way
-  const slot = hexZeroPad(mappingSlot, 32);
-  return hexStripZeros(keccak256(defaultAbiCoder.encode(['uint256', 'uint256'], [key, slot])));
+  const slot = pad(mappingSlot, { size: 32 });
+  return trim(
+    keccak256(
+      encodeAbiParameters(
+        [{ type: 'uint256' }, { type: 'uint256' }],
+        [typeof key === 'string' ? BigInt(key) : key, BigInt(slot)],
+      ),
+    ),
+  );
 }
 
 /**
@@ -23,11 +30,14 @@ export function getSolidityStorageSlotUint(mappingSlot: string, key: BigNumberis
  * @param key Mapping key to find slot for
  * @returns Storage slot
  */
-export function getSolidityStorageSlotBytes(mappingSlot: string, key: BigNumberish) {
-  const slot = hexZeroPad(mappingSlot, 32);
-  return hexStripZeros(keccak256(defaultAbiCoder.encode(['bytes32', 'uint256'], [key, slot])));
+export function getSolidityStorageSlotBytes(mappingSlot: `0x${string}`, key: `0x${string}`) {
+  const slot = pad(mappingSlot, { size: 32 });
+  return trim(
+    keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'uint256' }], [key, BigInt(slot)])),
+  );
 }
 
-export function to32ByteHexString(val: BigNumberish) {
-  return hexZeroPad(BigNumber.from(val).toHexString(), 32);
+export function to32ByteHexString(val: bigint | `0x${string}`) {
+  const bigIntVal = typeof val === 'string' ? BigInt(val) : val;
+  return pad(`0x${bigIntVal.toString(16)}`) as `0x${string}`;
 }

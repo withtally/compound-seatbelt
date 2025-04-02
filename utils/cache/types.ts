@@ -18,7 +18,7 @@ export interface CachedSimulationData {
   config: SimulationData['config'];
   sim: SimulationData['sim'];
   deps: SimulationData['deps'];
-  latestBlock: SimulationData['latestBlock'];
+  latestBlock: CachedBlock;
 }
 
 export interface ProposalCacheEntry {
@@ -32,4 +32,9 @@ export type NeedsSimulationParams = {
   governorAddress: string;
   proposalId: string;
   currentState: string | null;
+};
+
+export type CachedBlock = {
+  number: string;
+  timestamp: string;
 };

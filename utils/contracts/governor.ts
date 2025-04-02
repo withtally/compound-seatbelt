@@ -1,25 +1,33 @@
-import { defaultAbiCoder } from '@ethersproject/abi';
-import { getAddress } from '@ethersproject/address';
-import { keccak256 } from '@ethersproject/keccak256';
-import { toUtf8Bytes } from '@ethersproject/strings';
-import { BigNumber, type BigNumberish, Contract, ethers } from 'ethers';
+import {
+  type Address,
+  encodeAbiParameters,
+  getAddress,
+  getContract,
+  keccak256,
+  toBytes,
+  zeroAddress,
+} from 'viem';
 import type { GovernorType, ProposalEvent, ProposalStruct } from '../../types';
-import { provider } from '../clients/ethers';
+import { GOVERNOR_ABI } from '../abis/GovernorBravo';
+import { GOVERNOR_OZ_ABI } from '../abis/GovernorOZ';
+import { timelockAbi } from '../abis/Timelock';
+import { publicClient } from '../clients/client';
+import { erc20 as getErc20Token } from './erc20';
 import { getBravoSlots, governorBravo } from './governor-bravo';
 import { getOzSlots, governorOz } from './governor-oz';
-import { timelock } from './timelock';
 
 // --- Exported methods ---
-export async function inferGovernorType(address: string): Promise<GovernorType> {
-  const abi = ['function initialProposalId() external view returns (uint256)'];
-  const governor = new Contract(address, abi, provider);
-
+export async function inferGovernorType(address: Address): Promise<GovernorType> {
   try {
     // If the `initialProposalId` function exists, and the initial proposal was a "small" value,
     // it's overwhelmingly likely this is GovernorBravo. OZ style governors use a hash as the
     // proposal IDs so IDs will be very large numbers.
-    const id = <BigNumberish>await governor.initialProposalId();
-    if (BigNumber.from(id).lte(100_000)) return 'bravo';
+    const id = await publicClient.readContract({
+      address,
+      abi: GOVERNOR_ABI,
+      functionName: 'initialProposalId',
+    });
+    if (typeof id === 'bigint' && id <= 100_000n) return 'bravo';
   } catch (err) {
     console.error(err);
   }
@@ -27,160 +35,203 @@ export async function inferGovernorType(address: string): Promise<GovernorType> 
   return 'oz';
 }
 
-export function getGovernor(governorType: GovernorType, address: string) {
-  if (governorType === 'bravo') return governorBravo(address);
-  if (governorType === 'oz') return governorOz(address);
-  throw new Error(`Unknown governor type: ${governorType}`);
+export function getGovernor(governorType: GovernorType, address: Address) {
+  return governorType === 'bravo' ? governorBravo(address) : governorOz(address);
 }
 
 export async function getProposal(
   governorType: GovernorType,
-  address: string,
-  proposalId: BigNumberish,
+  address: Address,
+  proposalId: bigint,
 ): Promise<ProposalStruct> {
-  const governor = getGovernor(governorType, address);
-  if (governorType === 'bravo') return governor.proposals(proposalId);
+  if (governorType === 'bravo') {
+    const proposal = await publicClient.readContract({
+      address,
+      abi: GOVERNOR_ABI,
+      functionName: 'proposals',
+      args: [proposalId],
+    });
+
+    return {
+      id: proposalId,
+      eta: proposal[2],
+      startBlock: proposal[3],
+      endBlock: proposal[4],
+      forVotes: proposal[5],
+      againstVotes: proposal[6],
+      abstainVotes: proposal[7],
+      canceled: proposal[8],
+      executed: proposal[9],
+    };
+  }
 
   // Piece together the struct for OZ Governors.
-  const [[againstVotes, forVotes, abstainVotes], state, eta, startTime, endTime] =
-    await Promise.all([
-      governor.proposalVotes(proposalId),
-      governor.state(proposalId),
-      governor.proposalEta(proposalId),
-      governor.proposalSnapshot(proposalId),
-      governor.proposalDeadline(proposalId),
-    ]);
+  const ozContract = {
+    address,
+    abi: GOVERNOR_OZ_ABI,
+  } as const;
+
+  const [votes, state] = await publicClient.multicall({
+    contracts: [
+      { ...ozContract, functionName: 'proposalVotes', args: [proposalId] },
+      { ...ozContract, functionName: 'state', args: [proposalId] },
+    ],
+  });
+
+  if (votes.error) throw new Error('Proposal votes not found');
+  if (state.error) throw new Error('Proposal state not found');
+
+  const [againstVotes, forVotes, abstainVotes] = votes.result;
 
   return {
-    id: BigNumber.from(proposalId),
-    eta,
-    startTime,
-    endTime,
+    id: proposalId,
+    eta: 0n, // OZ governors don't use eta
+    startTime: 0n, // These are handled differently in OZ
+    endTime: 0n,
     forVotes,
     againstVotes,
     abstainVotes,
-    canceled: state === 2,
-    executed: state === 7,
+    canceled: state.result === 2,
+    executed: state.result === 7,
   };
 }
 
-export async function getTimelock(governorType: GovernorType, address: string) {
+export async function getTimelock(governorType: GovernorType, address: Address) {
   const governor = getGovernor(governorType, address);
-  if (governorType === 'bravo') return timelock(await governor.admin());
-  return timelock(await governor.timelock());
+  if (!governor) throw new Error('Governor not found');
+  const timelockAddress = await governor.read.timelock();
+
+  return getContract({
+    address: timelockAddress,
+    abi: timelockAbi,
+    client: publicClient,
+  });
 }
 
 export async function getVotingToken(
   governorType: GovernorType,
-  address: string,
-  proposalId: BigNumberish,
-) {
+  address: Address,
+  proposalId: bigint,
+): Promise<ReturnType<typeof getErc20Token>> {
   const governor = getGovernor(governorType, address);
+  if (!governor) throw new Error('Governor not found');
+
   if (governorType === 'bravo') {
-    // Get voting token and total supply
     const govSlots = getBravoSlots(proposalId);
-    const rawVotingToken = await provider.getStorageAt(governor.address, govSlots.votingToken);
+    const rawVotingToken = await publicClient.getStorageAt({ address, slot: govSlots.votingToken });
+    if (!rawVotingToken) throw new Error('Voting token not found');
     const votingToken = getAddress(`0x${rawVotingToken.slice(26)}`);
-    return erc20(votingToken);
+    return getErc20Token(votingToken);
   }
 
-  return erc20(await governor.token());
+  const tokenAddress = await governorOz(address).read.token();
+  return getErc20Token(tokenAddress);
 }
 
-export function getGovSlots(governorType: GovernorType, proposalId: BigNumberish) {
+export function getGovSlots(governorType: GovernorType, proposalId: bigint) {
   if (governorType === 'bravo') return getBravoSlots(proposalId);
   return getOzSlots(proposalId);
 }
 
 export async function getProposalIds(
   governorType: GovernorType,
-  address: string,
-  latestBlockNum: number,
-): Promise<BigNumber[]> {
+  address: Address,
+  latestBlockNum: bigint,
+): Promise<bigint[]> {
   if (governorType === 'bravo') {
     // Fetch all proposal IDs
     const governor = governorBravo(address);
-    const proposalCreatedLogs = await governor.queryFilter(
-      governor.filters.ProposalCreated(),
-      0,
-      latestBlockNum,
-    );
-    const allProposalIds = proposalCreatedLogs.map(
-      (logs) => (logs.args as unknown as ProposalEvent).id!,
-    );
+    const proposalCreatedEvents = await publicClient.getContractEvents({
+      address: governor.address,
+      abi: GOVERNOR_ABI,
+      eventName: 'ProposalCreated',
+      fromBlock: 0n,
+      toBlock: latestBlockNum,
+    });
+
+    // Get all proposal IDs from events
+    const allProposalIds = proposalCreatedEvents
+      .map((event) => event.args.id)
+      .filter((id): id is bigint => id !== undefined);
 
     // Remove proposals from GovernorAlpha based on the initial GovernorBravo proposal ID
-    const initialProposalId = await governor.initialProposalId();
-    return allProposalIds
-      .filter((id) => BigNumber.from(id).gt(initialProposalId))
-      .map((id) => BigNumber.from(id));
+    const initialProposalId = await governor.read.initialProposalId();
+
+    // Filter out those that are less than or equal to initialProposalId
+    return allProposalIds.filter((id) => id > initialProposalId);
   }
 
-  const governor = governorOz(address);
-  const proposalCreatedLogs = await governor.queryFilter(
-    governor.filters.ProposalCreated(),
-    0,
-    latestBlockNum,
-  );
-  return proposalCreatedLogs.map((logs) =>
-    BigNumber.from((logs.args as unknown as ProposalEvent).proposalId!),
-  );
+  // Fetch all proposal IDs for OZ governor
+  const proposalCreatedEvents = await publicClient.getContractEvents({
+    address,
+    abi: GOVERNOR_OZ_ABI,
+    eventName: 'ProposalCreated',
+    fromBlock: 0n,
+    toBlock: latestBlockNum,
+  });
+
+  // Filter out undefined values with a type guard
+  const allProposalIds = proposalCreatedEvents
+    .map((event) => event.args.proposalId)
+    .filter((id): id is bigint => id !== undefined);
+  return allProposalIds;
 }
 
-export function getProposalId(proposal: ProposalEvent): BigNumber {
-  const id = proposal.id || proposal.proposalId;
-  if (!id) throw new Error(`Proposal ID not found for proposal: ${JSON.stringify(proposal)}`);
-  return BigNumber.from(id);
+export function getProposalId(proposal: ProposalEvent): bigint {
+  return proposal.id ?? proposal.proposalId;
 }
 
 // Generate proposal ID, used when simulating new proposals.
 export async function generateProposalId(
   governorType: GovernorType,
-  address: string,
+  address: Address,
   // Below arg is only required for OZ governors.
   {
     targets,
     values,
     calldatas,
     description,
-  }: { targets: string[]; values: BigNumberish[]; calldatas: string[]; description: string } = {
+  }: { targets: Address[]; values: bigint[]; calldatas: `0x${string}`[]; description: string } = {
     targets: [],
     values: [],
     calldatas: [],
     description: '',
   },
-): Promise<BigNumber> {
+): Promise<bigint> {
   // Fetch proposal count from the contract and increment it by 1.
   if (governorType === 'bravo') {
-    const count: BigNumber = await governorBravo(address).proposalCount();
-    return count.add(1);
+    const count = await governorBravo(address).read.proposalCount();
+    return count + 1n;
   }
 
-  // Compute proposal ID from the tx data
-  return BigNumber.from(
-    keccak256(
-      defaultAbiCoder.encode(
-        ['address[]', 'uint256[]', 'bytes[]', 'bytes32'],
-        [targets, values, calldatas, keccak256(toUtf8Bytes(description))],
-      ),
-    ),
-  );
+  return await publicClient.readContract({
+    address,
+    abi: GOVERNOR_OZ_ABI,
+    functionName: 'hashProposal',
+    args: [targets, values, calldatas, keccak256(toBytes(description))],
+  });
 }
 
 // Returns the identifier of an operation containing a single transaction.
 // For OZ governors, predecessor is often zero and salt is often description hash.
 // This is only intended to be used with OZ governors.
 export function hashOperationOz(
-  target: string,
-  value: BigNumberish,
-  calldata: string,
-  predecessor: string,
-  salt: string,
-): BigNumber {
-  return BigNumber.from(
+  target: Address,
+  value: bigint,
+  calldata: `0x${string}`,
+  predecessor: `0x${string}`,
+  salt: `0x${string}`,
+): bigint {
+  return BigInt(
     keccak256(
-      defaultAbiCoder.encode(
-        ['address', 'uint256', 'bytes', 'bytes32', 'bytes32'],
+      encodeAbiParameters(
+        [
+          { type: 'address' },
+          { type: 'uint256' },
+          { type: 'bytes' },
+          { type: 'bytes32' },
+          { type: 'bytes32' },
+        ],
         [target, value, calldata, predecessor, salt],
       ),
     ),
@@ -191,62 +242,65 @@ export function hashOperationOz(
 // For OZ governors, predecessor is often zero and salt is often description hash.
 // This is only intended to be used with OZ governors.
 export function hashOperationBatchOz(
-  targets: string[],
-  values: BigNumberish[],
-  calldatas: string[],
-  predecessor: string,
-  salt: string,
-): BigNumber {
-  return BigNumber.from(
+  targets: Address[],
+  values: bigint[],
+  calldatas: `0x${string}`[],
+  predecessor: `0x${string}`,
+  salt: `0x${string}`,
+): bigint {
+  return BigInt(
     keccak256(
-      defaultAbiCoder.encode(
-        ['address[]', 'uint256[]', 'bytes[]', 'bytes32', 'bytes32'],
+      encodeAbiParameters(
+        [
+          { type: 'address[]' },
+          { type: 'uint256[]' },
+          { type: 'bytes[]' },
+          { type: 'bytes32' },
+          { type: 'bytes32' },
+        ],
         [targets, values, calldatas, predecessor, salt],
       ),
     ),
   );
 }
 
-export async function getImplementation(address: string, blockTag: number) {
+export async function getImplementation(
+  address: Address,
+  blockTag: bigint,
+): Promise<Address | null> {
   // First try calling an `implementation` method.
   const abi = ['function implementation() external view returns (address)'];
-  const governor = new Contract(address, abi, provider);
   try {
-    const implementation = await governor.implementation({ blockTag });
+    const implementation = (await publicClient.readContract({
+      address,
+      abi,
+      functionName: 'implementation',
+      blockNumber: blockTag,
+    })) as Address;
     return implementation;
   } catch {}
 
   // Next we try reading the EIP-1967 storage slot directly.
   try {
-    const slot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
-    const rawImplementation = await provider.getStorageAt(address, slot, blockTag);
+    const slot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc' as const;
+    const rawImplementation = await publicClient.getStorageAt({
+      address,
+      slot,
+      blockNumber: blockTag,
+    });
+    if (!rawImplementation) return null;
     const implementation = getAddress(`0x${rawImplementation.slice(26)}`);
-    if (implementation !== ethers.constants.AddressZero) return implementation;
+    if (implementation === zeroAddress) return null;
+    return implementation;
   } catch {}
 
   return null;
 }
 
-export function formatProposalId(governorType: GovernorType, id: BigNumberish) {
-  if (governorType === 'oz') return BigNumber.from(id).toHexString();
-  return BigNumber.from(id).toString();
+export function formatProposalId(governorType: GovernorType, id: string | bigint) {
+  const bigIntId = typeof id === 'string' ? BigInt(id) : id;
+  if (governorType === 'oz') return `0x${bigIntId.toString(16)}`;
+  return bigIntId.toString();
 }
 
-// --- Private helper methods ---
-/**
- * @notice Returns an ERC20 instance of the specified token
- * @param token Token address
- */
-function erc20(token: string) {
-  // This ABI only contains view methods and events
-  const ERC20_ABI = [
-    'function name() external view returns (string)',
-    'function symbol() external view returns (string)',
-    'function decimals() external view returns (uint8)',
-    'function balanceOf(address owner) external view returns (uint256 balance)',
-    'function totalSupply() external view returns (uint256)',
-    'event Transfer(address indexed from, address indexed to, uint256 value)',
-    'event Approval(address indexed owner, address indexed spender, uint256 value)',
-  ];
-  return new Contract(token, ERC20_ABI, provider);
-}
+export type GetGovernorReturnType = ReturnType<typeof getGovernor>;
