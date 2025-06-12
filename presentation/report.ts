@@ -13,6 +13,7 @@ import remarkToc from 'remark-toc';
 import { unified } from 'unified';
 import { visit } from 'unist-util-visit';
 import type { Visitor } from 'unist-util-visit';
+import { getAddress } from 'viem';
 import type {
   AllCheckResults,
   GovernorType,
@@ -21,9 +22,12 @@ import type {
   SimulationCalldata,
   SimulationCheck,
   SimulationEvent,
+  SimulationResult,
   SimulationStateChange,
   StructuredSimulationReport,
 } from '../types';
+import { getChainConfig } from '../utils/clients/client';
+import { getContractName } from '../utils/clients/tenderly';
 import { formatProposalId } from '../utils/contracts/governor';
 
 // --- Markdown helpers ---
@@ -55,10 +59,10 @@ export function blockQuote(str: string) {
 /**
  * Turns a plaintext address into a link to etherscan page of that address
  * @param address to be linked
- * @param code whether to link to the code tab
+ * @param baseUrl the base URL for the etherscan link
  */
-export function toAddressLink(address: string, code = false) {
-  return `[\`${address}\`](https://etherscan.io/address/${address}${code ? '#code' : ''})`;
+export function toAddressLink(address: string, baseUrl = 'https://etherscan.io'): string {
+  return `[${address}](${baseUrl}/address/${address})`;
 }
 
 // -- Report formatters ---
@@ -66,7 +70,7 @@ export function toAddressLink(address: string, code = false) {
 function toMessageList(header: string, text: string[]): string {
   return text.length > 0
     ? `${bold(header)}:\n\n${text
-        .filter((msg) => msg.trim())
+        .filter((msg) => msg && typeof msg === 'string' && msg.trim())
         .map((msg) => {
           // If the message starts with spaces, it's already indented (sub-item), preserve the indentation
           if (msg.match(/^\s{4,}/)) {
@@ -205,6 +209,9 @@ function generateStructuredReport(
     let currentContractAddress = '';
 
     for (const infoMsg of result.info) {
+      // Skip non-string entries
+      if (typeof infoMsg !== 'string') continue;
+
       // Check if this is a contract name line: "ContractName at `0xAddress`"
       const contractNameMatch = infoMsg.match(/^(.+) at `(0x[a-fA-F0-9]{40})`$/);
       if (contractNameMatch) {
@@ -265,6 +272,9 @@ function generateStructuredReport(
   for (const checkId in checks) {
     const { result } = checks[checkId];
     for (const infoMsg of result.info) {
+      // Skip non-string entries
+      if (typeof infoMsg !== 'string') continue;
+
       // Try to extract events from info messages
       const eventMatch = infoMsg.match(/`(.+?)`\s+at\s+`(.+?)`\s*\n\s+\*\s+`(.+?)`/);
       if (eventMatch) {
@@ -322,6 +332,7 @@ function generateStructuredReport(
  * @param proposal The proposal details
  * @param checks The check results
  * @param markdownReport The full markdown report
+ * @param destinationSimulations Optional destination simulations
  */
 export function writeFrontendData(
   governorType: GovernorType,
@@ -329,6 +340,7 @@ export function writeFrontendData(
   proposal: ProposalEvent,
   checks: AllCheckResults,
   markdownReport: string,
+  destinationSimulations?: SimulationResult['destinationSimulations'],
 ) {
   // Only write frontend data if we're in proposal creation mode (SIM_NAME is set)
   if (!process.env.SIM_NAME) {
@@ -375,6 +387,9 @@ export function writeFrontendData(
       ),
     );
     console.log('Frontend data written for proposal creation');
+
+    // TODO: Potentially add destinationSimulations data to the frontend JSON if needed
+    console.log('[Frontend Data] Destination Sims: ', destinationSimulations); // Log for now
   } catch (error) {
     console.error('Error writing frontend data:', error);
   }
@@ -386,23 +401,36 @@ export function writeFrontendData(
  * @param blocks the relevant blocks for the proposal.
  * @param proposal The proposal details.
  * @param checks The checks results.
- * @param dir The directory where the file should be saved. It will be created if it doesn't exist.
+ * @param outputDir The directory where the file should be saved. It will be created if it doesn't exist.
  * @param filename The name of the file. All report formats will have the same filename with different extensions.
+ * @param destinationSimulations Optional destination simulations
  */
 export async function generateAndSaveReports(
   governorType: GovernorType,
   blocks: { current: SimulationBlock; start: SimulationBlock | null; end: SimulationBlock | null },
   proposal: ProposalEvent,
   checks: AllCheckResults,
-  dir: string,
+  outputDir: string,
+  destinationSimulations?: SimulationResult['destinationSimulations'],
+  destinationChecks?: Record<number, AllCheckResults>,
 ) {
+  console.log(`[Report] Generating report for proposal ${proposal.id} (${proposal.proposalId})`);
+  console.log(`[Report] Output directory: ${outputDir}`);
+
   // Prepare the output folder and filename.
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   const id = formatProposalId(governorType, proposal.id!);
-  const path = `${dir}/${id}`;
+  const path = `${outputDir}/${id}`;
 
   // Generate the base markdown proposal report. This is the markdown report which is translated into other file types.
-  const baseReport = await toMarkdownProposalReport(governorType, blocks, proposal, checks);
+  const baseReport = await toMarkdownProposalReport(
+    governorType,
+    blocks,
+    proposal,
+    checks,
+    destinationSimulations,
+    destinationChecks,
+  );
 
   // The table of contents' links in the baseReport work when converted to HTML, but do not work as Markdown
   // or PDF links, since the emojis in the header titles cause issues. We apply the remarkFixEmojiLinks plugin
@@ -440,7 +468,7 @@ export async function generateAndSaveReports(
   ]);
 
   // Write frontend data if in proposal creation mode
-  writeFrontendData(governorType, blocks, proposal, checks, markdownReport);
+  writeFrontendData(governorType, blocks, proposal, checks, markdownReport, destinationSimulations);
 }
 
 /**
@@ -448,12 +476,15 @@ export async function generateAndSaveReports(
  * @param blocks the relevant blocks for the proposal.
  * @param proposal The proposal details.
  * @param checks The checks results.
+ * @param destinationSimulations Optional destination simulations
  */
 async function toMarkdownProposalReport(
   governorType: GovernorType,
   blocks: { current: SimulationBlock; start: SimulationBlock | null; end: SimulationBlock | null },
   proposal: ProposalEvent,
   checks: AllCheckResults,
+  destinationSimulations?: SimulationResult['destinationSimulations'],
+  destinationChecks?: Record<number, AllCheckResults>,
 ): Promise<string> {
   const { id, proposer, targets, endBlock, startBlock, description } = proposal;
 
@@ -479,7 +510,7 @@ _Updated as of block [${blocks.current.number}](https://etherscan.io/block/${blo
       ? formatTime(blocks.end.timestamp)
       : formatTime(estimateTime(blocks.current, endBlock))
   })
-- Targets: ${targets.map((target) => toAddressLink(target, true)).join('; ')}
+- Targets: ${targets.map((target) => toAddressLink(target)).join('; ')}
 
 ## Table of contents
 
@@ -489,14 +520,147 @@ This is filled in by remark-toc and this sentence will be removed.
 
 ${blockQuote(description.trim())}
 
-## Checks\n
+## Main Chain Checks\n
 ${Object.keys(checks)
   .map((checkId) => toCheckSummary(checks[checkId]))
   .join('\n')}
+
+## Cross-Chain Simulation Results
+${
+  destinationSimulations && destinationSimulations.length > 0
+    ? `\n${await formatCrossChainResults(destinationSimulations, destinationChecks)}`
+    : '' // Render nothing if no destination sims
+}
 `;
 
   // Add table of contents and return report.
   return (await remark().use(remarkToc, { tight: true }).process(report)).toString();
+}
+
+/**
+ * Format cross-chain simulation results, grouping by chain ID
+ */
+async function formatCrossChainResults(
+  destinationSimulations: SimulationResult['destinationSimulations'],
+  destinationChecks?: Record<number, AllCheckResults>,
+): Promise<string> {
+  if (!destinationSimulations) return '';
+
+  // Group simulations by chain ID
+  const simulationsByChain = destinationSimulations.reduce(
+    (acc, sim) => {
+      const chainId = sim.chainId;
+      if (!acc[chainId]) {
+        acc[chainId] = [];
+      }
+      acc[chainId].push(sim);
+      return acc;
+    },
+    {} as Record<number, typeof destinationSimulations>,
+  );
+
+  // Format each chain's section
+  const chainSections = await Promise.all(
+    Object.entries(simulationsByChain).map(async ([chainId, sims]) => {
+      if (!sims || sims.length === 0) return '';
+
+      const chainName = getChainName(Number(chainId));
+      const bridgeType = sims[0].bridgeType;
+
+      // Get the correct block explorer URL for this chain
+      const chainConfig = getChainConfig(Number(chainId));
+      const blockExplorerUrl = chainConfig.blockExplorer.baseUrl;
+
+      // Format L1 message details with correct block explorer links
+      const l1Messages = sims
+        .map((sim, index) => {
+          const l2Target = sim.l2Params?.l2TargetAddress;
+          return `  - Message ${index + 1}: ${l2Target ? `Target: ${toAddressLink(l2Target, blockExplorerUrl)}` : 'No target address'}`;
+        })
+        .join('\n');
+
+      // Get overall chain status
+      const allSuccessful = sims.every((sim) => sim.status === 'success');
+      const status = allSuccessful ? '✅ Succeeded' : '❌ Failed';
+
+      // Format check results for this chain
+      let checkResults = '';
+      if (destinationChecks?.[Number(chainId)]) {
+        checkResults = '\n  ### L2 Checks\n';
+        checkResults += Object.keys(destinationChecks[Number(chainId)])
+          .map((checkId) => toCheckSummary(destinationChecks[Number(chainId)][checkId]))
+          .join('\n');
+      }
+
+      // Format any errors
+      const errors = sims
+        .filter((sim) => sim.status === 'failure')
+        .map((sim) => `    - Error: ${sim.error || 'Unknown error'}`)
+        .join('\n');
+
+      // Format L2 events from all simulations
+      let l2Events = '';
+      if (allSuccessful) {
+        const allEventsArrays = await Promise.all(
+          sims
+            .filter((sim) => sim.sim)
+            .map(async (sim, simIndex) => {
+              const logs = sim.sim?.transaction.transaction_info.logs || [];
+
+              const logPromises = logs.map(async (log) => {
+                if (!log.name) return null;
+
+                // Fix case-sensitivity bug: normalize addresses before comparison
+                const contract = sim.sim?.contracts.find(
+                  (c) => getAddress(c.address) === getAddress(log.raw.address),
+                );
+
+                // Use async getContractName with chain ID for better semantic names (e.g., "ARB Token")
+                const contractName = await getContractName(contract, Number(chainId));
+
+                const parsedInputs = log.inputs
+                  .map((i) => `${i.soltype!.name}: ${i.value}`)
+                  .join(', ');
+                // Include simulation index to show which message this event came from
+                const messageLabel = sims.length > 1 ? ` (Message ${simIndex + 1})` : '';
+                return `  - ${contractName}${messageLabel}\n    * \`${log.name}(${parsedInputs})\``;
+              });
+
+              const results = await Promise.all(logPromises);
+              return results.filter(Boolean);
+            }),
+        );
+
+        const allEvents = allEventsArrays.flat();
+        if (allEvents.length > 0) {
+          l2Events = `\n  ### L2 Events\n${allEvents.join('\n')}`;
+        }
+      }
+
+      return `### Chain: ${chainName} (${chainId})
+- Bridge Type: ${bridgeType}
+- L1 Messages:
+${l1Messages}
+- L2 Execution Status: ${status}
+${errors ? `- Errors:\n${errors}` : ''}${l2Events}${checkResults}`;
+    }),
+  );
+
+  return chainSections.filter(Boolean).join('\n\n');
+}
+
+/**
+ * Get human-readable chain name from chain ID
+ */
+function getChainName(chainId: number): string {
+  const chainNames: Record<number, string> = {
+    42161: 'Arbitrum One',
+    10: 'Optimism',
+    137: 'Polygon',
+    100: 'Gnosis Chain',
+    1: 'Ethereum Mainnet',
+  };
+  return chainNames[chainId] || `Chain ${chainId}`;
 }
 
 /**

@@ -1,20 +1,41 @@
 import { type PublicClient, getAddress } from 'viem';
 import { toAddressLink } from '../presentation/report';
-import type { ProposalCheck } from '../types';
+import type { CallTrace, ProposalCheck, TenderlySimulation } from '../types';
 
 /**
  * Check all targets with code if they contain selfdestruct.
  */
 export const checkTargetsNoSelfdestruct: ProposalCheck = {
   name: 'Check all targets do not contain selfdestruct',
-  async checkProposal(proposal, _, deps) {
-    const uniqueTargets = proposal.targets.filter(
-      (addr, i, targets) => targets.indexOf(addr) === i,
-    );
+  async checkProposal(proposal, _, deps, l2Simulations) {
+    const isL2Chain = deps.chainConfig?.chainId !== 1;
+    const hasL2Data = l2Simulations && l2Simulations.length > 0;
+
+    let targets: `0x${string}`[];
+
+    if (isL2Chain && hasL2Data) {
+      // For L2 chains, extract targets from cross-chain simulation data
+      targets = extractL2Targets(l2Simulations);
+      if (targets.length === 0) {
+        return {
+          info: ['No L2 targets found in cross-chain simulation'],
+          warnings: [],
+          errors: [],
+        };
+      }
+    } else {
+      // For mainnet, use proposal targets
+      targets = proposal.targets
+        .filter((addr, i, targets) => targets.indexOf(addr) === i)
+        .map(getAddress);
+    }
+
+    const blockExplorerUrl = deps.chainConfig.blockExplorer.baseUrl;
     const { info, warn, error } = await checkNoSelfdestructs(
       [deps.governor.address, deps.timelock.address],
-      uniqueTargets.map(getAddress),
+      targets,
       deps.publicClient,
+      blockExplorerUrl,
     );
     return { info, warnings: warn, errors: error };
   },
@@ -26,10 +47,12 @@ export const checkTargetsNoSelfdestruct: ProposalCheck = {
 export const checkTouchedContractsNoSelfdestruct: ProposalCheck = {
   name: 'Check all touched contracts do not contain selfdestruct',
   async checkProposal(_, sim, deps) {
+    const blockExplorerUrl = deps.chainConfig.blockExplorer.baseUrl;
     const { info, warn, error } = await checkNoSelfdestructs(
       [deps.governor.address, deps.timelock.address],
       sim.transaction.addresses.map(getAddress),
       deps.publicClient,
+      blockExplorerUrl,
     );
     return { info, warnings: warn, errors: error };
   },
@@ -42,13 +65,14 @@ async function checkNoSelfdestructs(
   trustedAddrs: `0x${string}`[],
   addresses: `0x${string}`[],
   publicClient: PublicClient,
+  blockExplorerUrl: string,
 ): Promise<{ info: string[]; warn: string[]; error: string[] }> {
   const info: string[] = [];
   const warn: string[] = [];
   const error: string[] = [];
   for (const addr of addresses) {
     const status = await checkNoSelfdestruct(trustedAddrs, addr, publicClient);
-    const address = toAddressLink(addr, false);
+    const address = toAddressLink(addr, blockExplorerUrl);
     if (status === 'eoa') info.push(`${address}: EOA`);
     else if (status === 'empty') warn.push(`${address}: EOA (may have code later)`);
     else if (status === 'safe') info.push(`${address}: Contract (looks safe)`);
@@ -120,4 +144,43 @@ async function checkNoSelfdestruct(
   }
 
   return delegatecall ? 'delegatecall' : 'safe';
+}
+
+/**
+ * Extract unique target addresses from L2 simulations
+ */
+function extractL2Targets(
+  l2Simulations: Array<{ chainId: number; sim: TenderlySimulation }>,
+): `0x${string}`[] {
+  const targets = new Set<string>();
+
+  for (const l2Sim of l2Simulations) {
+    if (l2Sim.sim?.transaction?.transaction_info?.call_trace?.calls) {
+      // Extract target addresses from L2 calls
+      extractTargetsFromCalls(l2Sim.sim.transaction.transaction_info.call_trace.calls, targets);
+    }
+
+    // Also include the main transaction target if it exists
+    if (l2Sim.sim?.transaction?.to) {
+      targets.add(l2Sim.sim.transaction.to.toLowerCase());
+    }
+  }
+
+  return Array.from(targets).map((addr) => getAddress(addr));
+}
+
+/**
+ * Recursively extract target addresses from call traces
+ */
+function extractTargetsFromCalls(calls: CallTrace[], targets: Set<string>): void {
+  for (const call of calls || []) {
+    if (call.to && call.input && call.input !== '0x') {
+      targets.add(call.to.toLowerCase());
+    }
+
+    // Recursively process subcalls
+    if (call.calls) {
+      extractTargetsFromCalls(call.calls, targets);
+    }
+  }
 }

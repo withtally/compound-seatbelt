@@ -1,7 +1,5 @@
-import { writeFileSync } from 'node:fs';
 import mftch from 'micro-ftch';
 import type { FETCH_OPT } from 'micro-ftch';
-import type { Address } from 'viem';
 import {
   encodeAbiParameters,
   encodeFunctionData,
@@ -11,6 +9,7 @@ import {
   toHex,
   zeroHash,
 } from 'viem';
+import type { Address } from 'viem';
 import type {
   ProposalData,
   ProposalEvent,
@@ -23,8 +22,9 @@ import type {
   TenderlyContract,
   TenderlyPayload,
   TenderlySimulation,
-} from '../../types';
+} from '../../types.d';
 import { GOVERNOR_ABI } from '../abis/GovernorBravo';
+import { parseArbitrumL1L2Messages } from '../bridges/arbitrum';
 import {
   BLOCK_GAS_LIMIT,
   TENDERLY_ACCESS_TOKEN,
@@ -33,6 +33,7 @@ import {
   TENDERLY_SIM_URL,
 } from '../constants';
 import { GOVERNOR_OZ_ABI } from '../constants/abi';
+import { fetchTokenMetadata } from '../contracts/erc20';
 import {
   generateProposalId,
   getGovernor,
@@ -42,15 +43,16 @@ import {
   hashOperationBatchOz,
   hashOperationOz,
 } from '../contracts/governor';
-import { publicClient } from './client';
+import { getChainConfig, publicClient } from './client';
 
 const fetchUrl = mftch;
 
 const TENDERLY_FETCH_OPTIONS = {
-  type: 'json',
+  type: 'json' as const,
   headers: { 'X-Access-Key': TENDERLY_ACCESS_TOKEN },
 };
-const DEFAULT_FROM = '0xD73a92Be73EfbFcF3854433A5FcbAbF9c1316073' as Address; // arbitrary EOA not used on-chain
+
+const DEFAULT_FROM = '0xD73a92Be73EfbFcF3854433A5FcbAbF9c1316073' as Address;
 
 type TenderlyError = {
   statusCode?: number;
@@ -172,6 +174,10 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     );
     timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
   }
+
+  console.log(`[Tenderly] Setting up storage overrides for proposal ${proposalId}`);
+  console.log(`[Tenderly] Proposal targets: ${targets.length} targets`);
+  console.log(`[Tenderly] Storage key format: proposals[${proposalId}]`);
 
   // Use the Tenderly API to get the encoded state overrides for governor storage
   let governorStateOverrides: Record<string, string> = {};
@@ -315,9 +321,11 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     governor,
     timelock,
     publicClient,
+    chainConfig: getChainConfig(1), // Mainnet chain config
+    targets: targets.map((target: string) => target),
+    touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
-  writeFileSync('new-response.json', JSON.stringify(sim, null, 2));
   return { sim, proposal, latestBlock, deps };
 }
 
@@ -559,6 +567,9 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     governor,
     timelock,
     publicClient,
+    chainConfig: getChainConfig(1), // Mainnet chain config
+    targets: proposalCreatedEvent.args.targets?.map((target: string) => target) ?? [],
+    touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
   return { sim, proposal: formattedProposal, latestBlock, deps };
@@ -652,9 +663,117 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
     governor,
     timelock,
     publicClient,
+    chainConfig: getChainConfig(1), // Mainnet chain config
+    targets: proposalCreatedEvent.args.targets?.map((target: string) => target) ?? [],
+    touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
   return { sim, proposal: formattedProposal, latestBlock, deps };
+}
+
+/**
+ * @notice Takes a completed source simulation result and handles parsing for
+ *         cross-chain messages and executing destination simulations.
+ * @param sourceResult The result of the source chain simulation.
+ * @returns The potentially augmented SimulationResult including destination sim info.
+ */
+export async function handleCrossChainSimulations(
+  sourceResult: SimulationResult,
+): Promise<SimulationResult> {
+  const result = {
+    ...sourceResult,
+    destinationSimulations: sourceResult.destinationSimulations ?? [],
+    crossChainFailure: sourceResult.crossChainFailure ?? false,
+  };
+
+  if (!result.sim.transaction.status) {
+    console.log('[CrossChainHandler] Source simulation failed, skipping destination checks.');
+    return result;
+  }
+
+  // 1. Parse source simulation for cross-chain messages
+  console.log('[CrossChainHandler] Parsing source sim for messages...');
+  // TODO: Extend this to handle multiple bridge types if needed
+  const extractedMessages = parseArbitrumL1L2Messages(result.sim);
+
+  if (extractedMessages.length === 0) {
+    console.log('[CrossChainHandler] No cross-chain messages detected.');
+    return result; // Return early with original source data
+  }
+
+  // 2. If messages found, simulate them on destination chains
+  console.log(
+    `[CrossChainHandler] Detected ${extractedMessages.length} messages. Simulating destinations...`,
+  );
+
+  const destinationResults = await Promise.all(
+    extractedMessages.map(async (message) => {
+      console.log(`[CrossChainHandler] Simulating L2 message to: ${message.l2TargetAddress}`);
+      try {
+        const destinationPayload: TenderlyPayload = {
+          network_id: message.destinationChainId.toString() as TenderlyPayload['network_id'],
+          from: message.l2FromAddress ?? DEFAULT_FROM,
+          to: message.l2TargetAddress,
+          input: message.l2InputData,
+          gas: BLOCK_GAS_LIMIT,
+          gas_price: '0',
+          value: message.l2Value,
+          save_if_fails: true,
+          save: false,
+        };
+
+        // Log the payload before sending
+        console.log(
+          `[CrossChainHandler] Sending L2 Simulation Payload (Chain ${destinationPayload.network_id}):`,
+          JSON.stringify(destinationPayload, null, 2),
+        );
+
+        const destSim = await sendSimulation(destinationPayload);
+
+        if (destSim.transaction.status) {
+          console.log(
+            `[CrossChainHandler] Destination sim SUCCESS for L2 target: ${message.l2TargetAddress}`,
+          );
+          return {
+            chainId: Number(message.destinationChainId),
+            bridgeType: message.bridgeType,
+            status: 'success' as const,
+            sim: destSim,
+            l2Params: message,
+          };
+        }
+        console.error(
+          `[CrossChainHandler] Destination sim FAILED for L2 target: ${message.l2TargetAddress}`,
+        );
+        const errorMsg = destSim.transaction?.transaction_info?.call_trace?.error_reason;
+        return {
+          chainId: Number(message.destinationChainId),
+          bridgeType: message.bridgeType,
+          status: 'failure' as const,
+          error: errorMsg,
+          sim: destSim,
+          l2Params: message,
+        };
+      } catch (error: unknown) {
+        console.error(
+          `[CrossChainHandler] Error during destination simulation API call for L2 target ${message.l2TargetAddress}:`,
+          error,
+        );
+        return {
+          chainId: Number(message.destinationChainId),
+          bridgeType: message.bridgeType,
+          status: 'failure' as const,
+          error: `Simulation API call failed: ${(error as Error).message}`,
+          l2Params: message,
+        };
+      }
+    }),
+  );
+
+  result.destinationSimulations = destinationResults;
+  result.crossChainFailure = destinationResults.some((res) => res.status === 'failure');
+
+  return result;
 }
 
 // --- Helper methods ---
@@ -668,17 +787,62 @@ const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max 
 /**
  * @notice Given a Tenderly contract object, generates a descriptive human-friendly name for that contract
  * @param contract Tenderly contract object to generate name from
+ * @param chainId Optional chain ID to fetch better contract names from block explorers
  */
-export function getContractName(contract: TenderlyContract | undefined) {
-  if (!contract) return 'unknown contract name';
-  let contractName = contract?.contract_name;
+export async function getContractName(
+  contract: TenderlyContract | undefined,
+  chainId?: number,
+): Promise<string> {
+  if (!contract) return 'Unknown Contract';
 
-  // If the contract is a token, include the full token name. This is useful in cases where the
-  // token is a proxy, so the contract name doesn't give much useful information
-  if (contract?.token_data?.name) contractName += ` (${contract?.token_data?.name})`;
+  const contractAddress = getAddress(contract.address);
 
-  // Lastly, append the contract address and save it off
-  return `${contractName} at \`${getAddress(contract.address)}\``;
+  // Priority 1: Use token metadata for semantic names (like "ARB Token") when available
+  if (contract?.token_data?.name) {
+    const tokenName = contract.token_data.name;
+    // Try to get token symbol to make it more descriptive
+    try {
+      if (chainId && (chainId === 42161 || chainId === 1)) {
+        const metadata = await fetchTokenMetadata(contractAddress);
+        const symbol = metadata.symbol || contract.token_data.symbol || tokenName;
+        return `${tokenName} (${symbol}) at \`${contractAddress}\``;
+      }
+    } catch (error) {
+      // Fallback to just token name if metadata fetch fails
+      console.debug(
+        `[Contract Name] Failed to fetch token metadata for ${contractAddress}:`,
+        error,
+      );
+    }
+    // Use token name with symbol from Tenderly if available
+    const symbol = contract.token_data.symbol || tokenName;
+    return `${tokenName} (${symbol}) at \`${contractAddress}\``;
+  }
+
+  // Priority 2: Use Tenderly's contract name (like "TransparentUpgradeableProxy")
+  const contractName = contract?.contract_name || 'Unknown Contract';
+  return `${contractName} at \`${contractAddress}\``;
+}
+
+/**
+ * @notice Uses only Tenderly's contract metadata for naming (no additional API calls)
+ * @param contract Tenderly contract object to generate name from
+ */
+export function getContractNameFromTenderly(contract: TenderlyContract | undefined): string {
+  if (!contract) return 'Unknown Contract';
+
+  const contractAddress = getAddress(contract.address);
+
+  // Priority 1: Use token name if available for better semantic naming
+  if (contract?.token_data?.name) {
+    const tokenName = contract.token_data.name;
+    const symbol = contract.token_data.symbol || tokenName;
+    return `${tokenName} (${symbol}) at \`${contractAddress}\``;
+  }
+
+  // Priority 2: Fall back to technical contract name
+  const contractName = contract?.contract_name || 'Unknown Contract';
+  return `${contractName} at \`${contractAddress}\``;
 }
 
 /**
