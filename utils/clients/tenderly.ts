@@ -326,7 +326,10 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
-  return { sim, proposal, latestBlock, deps };
+  // For new proposals, use simulation timing as created timing since they don't exist on-chain yet
+  const proposalCreatedBlock = latestBlock;
+
+  return { sim, proposal, latestBlock, deps, proposalCreatedBlock };
 }
 
 /**
@@ -572,7 +575,12 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
-  return { sim, proposal: formattedProposal, latestBlock, deps };
+  // Get block details for proposal creation timing
+  const proposalCreatedBlock = await publicClient.getBlock({
+    blockNumber: proposalCreatedEvent.blockNumber,
+  });
+
+  return { sim, proposal: formattedProposal, latestBlock, deps, proposalCreatedBlock };
 }
 
 /**
@@ -646,12 +654,20 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
   };
   const sim = await sendSimulation(simulationPayload);
 
+  // Validate required fields
+  if (!proposal.proposer) {
+    throw new Error(`Missing proposer in ProposalCreated event for proposal ${proposalId}`);
+  }
+  if (!proposal.description) {
+    throw new Error(`Missing description in ProposalCreated event for proposal ${proposalId}`);
+  }
+
   const formattedProposal: ProposalEvent = {
     ...proposal,
     id: proposalId,
     proposalId: proposalId,
-    proposer: tx.from,
-    description: proposal.description ?? '',
+    proposer: proposal.proposer, // Required field, validated above
+    description: proposal.description, // Required field, validated above
     targets: [...(proposal.targets ?? [])],
     values: [...(proposal.values ?? [])],
     signatures: [...(proposal.signatures ?? [])],
@@ -668,7 +684,21 @@ async function simulateExecuted(config: SimulationConfigExecuted): Promise<Simul
     touchedContracts: sim.contracts.map((contract) => contract.address),
   };
 
-  return { sim, proposal: formattedProposal, latestBlock, deps };
+  // Get block details for proposal creation and execution timing
+  const [proposalCreatedBlock, proposalExecutedBlock] = await Promise.all([
+    publicClient.getBlock({ blockNumber: proposalCreatedEvent.blockNumber }),
+    publicClient.getBlock({ blockNumber: proposalExecutedEvent.blockNumber }),
+  ]);
+
+  return {
+    sim,
+    proposal: formattedProposal,
+    latestBlock,
+    deps,
+    executor: tx.from,
+    proposalCreatedBlock,
+    proposalExecutedBlock,
+  };
 }
 
 /**

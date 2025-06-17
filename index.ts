@@ -119,15 +119,19 @@ async function main() {
       }
     }
 
-    await generateAndSaveReports(
+    await generateAndSaveReports({
       governorType,
       blocks,
       proposal,
-      mainnetResults,
-      dir,
-      finalResult.destinationSimulations,
+      checks: mainnetResults,
+      outputDir: dir,
+      governorAddress: config.governorAddress,
+      destinationSimulations: finalResult.destinationSimulations,
       destinationChecks,
-    );
+      executor: finalResult.executor,
+      proposalCreatedBlock: finalResult.proposalCreatedBlock,
+      proposalExecutedBlock: finalResult.proposalExecutedBlock,
+    });
     console.log(`[Index] Reports saved for ${SIM_NAME}.`);
   } else {
     // If no SIM_NAME is provided, we get proposals to simulate from the chain
@@ -232,13 +236,23 @@ async function main() {
           proposalId: simProposal.id,
         };
 
-        const { sim, proposal, latestBlock } = await simulate(config);
+        const {
+          sim,
+          proposal,
+          latestBlock,
+          proposalCreatedBlock,
+          proposalExecutedBlock,
+          executor,
+        } = await simulate(config);
         const simulationData: SimulationData & { checkResults?: AllCheckResults } = {
           sim,
           proposal,
           latestBlock,
           config,
           deps: proposalData,
+          proposalCreatedBlock,
+          proposalExecutedBlock,
+          executor,
         };
 
         // Run checks immediately after simulation
@@ -274,7 +288,17 @@ async function main() {
 
         // Generate reports immediately
         const dir = `./reports/${config.daoName}/${config.governorAddress}`;
-        await generateAndSaveReports(governorType, blocks, proposal, checkResults, dir);
+        await generateAndSaveReports({
+          governorType,
+          blocks,
+          proposal,
+          checks: checkResults,
+          outputDir: dir,
+          governorAddress: config.governorAddress,
+          executor: simulationData.executor,
+          proposalCreatedBlock: simulationData.proposalCreatedBlock,
+          proposalExecutedBlock: simulationData.proposalExecutedBlock,
+        });
 
         // Cache everything together
         simulationData.checkResults = checkResults;

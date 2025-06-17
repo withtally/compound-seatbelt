@@ -69,11 +69,20 @@ export type SimulationConfig =
 
 export type SimulationBlock = Pick<Block, 'number' | 'timestamp'>;
 
+export interface SimulationBlocks {
+  current: SimulationBlock;
+  start: SimulationBlock | null;
+  end: SimulationBlock | null;
+}
+
 export interface SimulationResult {
   sim: TenderlySimulation;
   proposal: ProposalEvent;
   deps: ProposalData;
   latestBlock: SimulationBlock;
+  executor?: string; // Who executed the proposal (for executed proposals)
+  proposalCreatedBlock?: SimulationBlock; // Block when proposal was created
+  proposalExecutedBlock?: SimulationBlock; // Block when proposal was executed (for executed proposals)
   destinationSimulations?: Array<{
     chainId: number;
     bridgeType: string; // e.g., 'ArbitrumL1L2'
@@ -589,11 +598,45 @@ export interface StructuredSimulationReport {
   events: SimulationEvent[];
   calldata?: SimulationCalldata;
   metadata: {
-    blockNumber: string;
-    timestamp: string;
     proposalId: string;
     proposer: string;
+    governorAddress: string;
+    executor?: string;
+    simulationBlockNumber: string;
+    simulationTimestamp: string;
+    proposalCreatedAtBlockNumber: string;
+    proposalCreatedAtTimestamp: string;
+    proposalExecutedAtBlockNumber?: string;
+    proposalExecutedAtTimestamp?: string;
   };
+}
+
+export interface GenerateReportsParams {
+  governorType: GovernorType;
+  blocks: SimulationBlocks;
+  proposal: ProposalEvent;
+  checks: AllCheckResults;
+  outputDir: string;
+  governorAddress: string;
+  destinationSimulations?: SimulationResult['destinationSimulations'];
+  destinationChecks?: Record<number, AllCheckResults>;
+  executor?: string;
+  proposalCreatedBlock?: SimulationBlock;
+  proposalExecutedBlock?: SimulationBlock;
+}
+
+export interface WriteSimulationResultsJsonParams {
+  governorType: GovernorType;
+  blocks: SimulationBlocks;
+  proposal: ProposalEvent;
+  checks: AllCheckResults;
+  markdownReport: string;
+  governorAddress: string;
+  outputPath: string;
+  destinationSimulations?: SimulationResult['destinationSimulations'];
+  executor?: string;
+  proposalCreatedBlock?: SimulationBlock;
+  proposalExecutedBlock?: SimulationBlock;
 }
 
 export interface FrontendData {
