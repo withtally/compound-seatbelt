@@ -25,6 +25,7 @@ import type {
 } from '../../types.d';
 import { GOVERNOR_ABI } from '../abis/GovernorBravo';
 import { parseArbitrumL1L2Messages } from '../bridges/arbitrum';
+import { parseOptimismL1L2Messages } from '../bridges/optimism';
 import {
   BLOCK_GAS_LIMIT,
   TENDERLY_ACCESS_TOKEN,
@@ -125,8 +126,9 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
   // Set `from` arbitrarily.
   const from = DEFAULT_FROM;
 
-  // Run simulation at the block right after the proposal ends.
-  const simBlock = proposal.endBlock + 1n;
+  // Run simulation at a recent block rather than using artificial proposal.endBlock
+  // This ensures we use current contract state and avoid potential cross-chain conflicts
+  const simBlock = latestBlock.number;
 
   // For OZ governors we arbitrarily choose execution time. For Bravo governors, we
   // compute the approximate earliest possible execution time based on governance parameters. This
@@ -174,10 +176,6 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
     );
     timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
   }
-
-  console.log(`[Tenderly] Setting up storage overrides for proposal ${proposalId}`);
-  console.log(`[Tenderly] Proposal targets: ${targets.length} targets`);
-  console.log(`[Tenderly] Storage key format: proposals[${proposalId}]`);
 
   // Use the Tenderly API to get the encoded state overrides for governor storage
   let governorStateOverrides: Record<string, string> = {};
@@ -317,6 +315,7 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
 
   // Run the simulation
   const sim = await sendSimulation(simulationPayload);
+
   const deps: ProposalData = {
     governor,
     timelock,
@@ -566,6 +565,7 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
 
   // Run the simulation
   const sim = await sendSimulation(simulationPayload);
+
   const deps: ProposalData = {
     governor,
     timelock,
@@ -723,8 +723,11 @@ export async function handleCrossChainSimulations(
 
   // 1. Parse source simulation for cross-chain messages
   console.log('[CrossChainHandler] Parsing source sim for messages...');
-  // TODO: Extend this to handle multiple bridge types if needed
-  const extractedMessages = parseArbitrumL1L2Messages(result.sim);
+
+  // Parse messages from both Arbitrum and Optimism bridges
+  const arbMessages = parseArbitrumL1L2Messages(result.sim);
+  const opMessages = parseOptimismL1L2Messages(result.sim);
+  const extractedMessages = [...arbMessages, ...opMessages];
 
   if (extractedMessages.length === 0) {
     console.log('[CrossChainHandler] No cross-chain messages detected.');
