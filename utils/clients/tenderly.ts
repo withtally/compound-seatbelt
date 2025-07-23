@@ -311,6 +311,12 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
       ...simulationPayload.state_objects[from],
       balance: totalValue.toString(),
     };
+
+    // Also ensure the timelock has enough ETH to execute the proposal
+    simulationPayload.state_objects[timelock.address] = {
+      ...simulationPayload.state_objects[timelock.address],
+      balance: totalValue.toString(),
+    };
   }
 
   // Run the simulation
@@ -559,6 +565,12 @@ async function simulateProposed(config: SimulationConfigProposed): Promise<Simul
     }
     simulationPayload.state_objects[from] = {
       ...simulationPayload.state_objects[from],
+      balance: totalValue.toString(),
+    };
+
+    // Also ensure the timelock has enough ETH to execute the proposal
+    simulationPayload.state_objects[timelock.address] = {
+      ...simulationPayload.state_objects[timelock.address],
       balance: totalValue.toString(),
     };
   }
