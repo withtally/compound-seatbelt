@@ -163,15 +163,42 @@ The system automatically detects the governor type, so no manual configuration i
 ```bash
 DAO_NAME=Compound
 GOVERNOR_ADDRESS=0xc0Da02939E1441F497fd74F78cE7Decb17B66529
+
+# Check all proposals
+bun start
+
+# Check specific proposal
+bun run check-proposal 43
 ```
 
 **Custom DAO:**
 ```bash
 DAO_NAME=YourDAO
 GOVERNOR_ADDRESS=0x... # Your governor address
+bun start
 ```
 
-For testing, you can also run specific simulations:
+### Custom Simulations
+
+For hypothetical or new proposals, create a simulation file in `sims/`:
+
+```typescript
+// sims/my-proposal.sim.ts
+export const config = {
+  type: 'proposed', // or 'executed'
+  daoName: 'Compound',
+  governorAddress: '0xc0Da02939E1441F497fd74F78cE7Decb17B66529',
+  governorType: 'bravo',
+  // ... proposal details
+};
+```
+
+Then run: `SIM_NAME=my-proposal bun start`
+
+### Testing Setup
+
+To verify your setup works:
 ```bash
-SIM_NAME=compound-43 bun start  # Test with existing Compound proposal
+# Test with existing simulation
+SIM_NAME=compound-43 bun start
 ```
