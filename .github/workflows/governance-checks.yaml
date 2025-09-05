@@ -75,12 +75,12 @@ jobs:
           TENDERLY_ACCESS_TOKEN: ${{ secrets.TENDERLY_ACCESS_TOKEN }}
           TENDERLY_USER: ${{ secrets.TENDERLY_USER }}
           TENDERLY_PROJECT_SLUG: ${{ secrets.TENDERLY_PROJECT_SLUG }}
-          DAO_NAME: ${{ env.DAO_NAME }}
-          GOVERNOR_ADDRESS: ${{ env.GOVERNOR_ADDRESS }}
+          DAO_NAME: ${{ vars.DAO_NAME }}
+          GOVERNOR_ADDRESS: ${{ vars.GOVERNOR_ADDRESS }}
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.DAO_NAME }}
-          path: reports/${{ env.DAO_NAME }}/${{ env.GOVERNOR_ADDRESS }}/
+          name: ${{ vars.DAO_NAME }}
+          path: reports/${{ vars.DAO_NAME }}/${{ vars.GOVERNOR_ADDRESS }}/
