@@ -11,7 +11,7 @@ on:
 
 jobs:
   check-proposals:
-    name: Check Uniswap Proposals
+    name: Check Compound Proposals
     runs-on: ubuntu-latest
     environment: ci
 
