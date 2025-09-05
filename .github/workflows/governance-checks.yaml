@@ -75,12 +75,12 @@ jobs:
           TENDERLY_ACCESS_TOKEN: ${{ secrets.TENDERLY_ACCESS_TOKEN }}
           TENDERLY_USER: ${{ secrets.TENDERLY_USER }}
           TENDERLY_PROJECT_SLUG: ${{ secrets.TENDERLY_PROJECT_SLUG }}
-          DAO_NAME: "Uniswap"
-          GOVERNOR_ADDRESS: "0x408ED6354d4973f66138C91495F2f2FCbd8724C3"
+          DAO_NAME: ${{ secrets.DAO_NAME }}
+          GOVERNOR_ADDRESS: ${{ secrets.GOVERNOR_ADDRESS }}
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Uniswap
-          path: reports/Uniswap/0x408ED6354d4973f66138C91495F2f2FCbd8724C3/
+          name: ${{ secrets.DAO_NAME }}
+          path: reports/${{ secrets.DAO_NAME }}/${{ secrets.GOVERNOR_ADDRESS }}/
