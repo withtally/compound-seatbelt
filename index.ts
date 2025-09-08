@@ -251,16 +251,24 @@ async function main() {
       proposalIds.map((id) => getGovernor(governorType, GOVERNOR_ADDRESS!).read.state([id])),
     );
     const simProposals: { id: bigint; simType: SimulationConfigBase['type']; state: string }[] =
-      proposalIds.map((id, i) => {
-        const stateNum = String(states[i]) as keyof typeof PROPOSAL_STATES;
-        const stateStr = PROPOSAL_STATES[stateNum] || 'Unknown';
-        const isExecuted = stateStr === 'Executed';
-        return {
-          id,
-          simType: isExecuted ? 'executed' : 'proposed',
-          state: stateStr,
-        };
-      });
+      proposalIds
+        .map((id, i) => {
+          const stateNum = String(states[i]) as keyof typeof PROPOSAL_STATES;
+          const stateStr = PROPOSAL_STATES[stateNum] || 'Unknown';
+          const isExecuted = stateStr === 'Executed';
+          return {
+            id,
+            simType: (isExecuted ? 'executed' : 'proposed') as SimulationConfigBase['type'],
+            state: stateStr,
+          };
+        })
+        .filter((proposal) => {
+          if (proposal.state === 'Canceled') {
+            console.log(`Skipping canceled proposal ${proposal.id}. Canceled proposals cannot be simulated.`);
+            return false;
+          }
+          return true;
+        });
 
     // If we aren't simulating all proposals, filter down to just the active ones. For now we
     // assume we're simulating all by default
