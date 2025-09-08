@@ -509,7 +509,7 @@ interface Input {
 interface Log {
   name: string | null;
   anonymous: boolean;
-  inputs: Input[];
+  inputs: Input[] | null;
   raw: LogRaw;
 }
 

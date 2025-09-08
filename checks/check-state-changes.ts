@@ -74,8 +74,13 @@ export const checkStateChanges: ProposalCheck = {
     // ETH balance changes are now handled by the checkEthBalanceChanges module
     for (const [address, diffs] of Object.entries(stateDiffs)) {
       // Use contracts array to get contract name of address
-      const contract = sim.contracts.find((c) => c.address === address);
-      info.push(await getContractName(contract));
+      const contract = sim.contracts.find((c) => getAddress(c.address) === getAddress(address));
+      if (!contract) {
+        // For unknown contracts, include the address for better debugging
+        info.push(`Unknown Contract at \`${getAddress(address)}\``);
+      } else {
+        info.push(await getContractName(contract));
+      }
 
       // Track processed state changes to deduplicate
       const processedChanges = new Set<string>();
