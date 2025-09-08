@@ -86,7 +86,7 @@ export interface SimulationResult {
   destinationSimulations?: Array<{
     chainId: number;
     bridgeType: string; // e.g., 'ArbitrumL1L2'
-    status: 'success' | 'failure';
+    status: 'success' | 'failure' | 'skipped';
     error?: string; // Optional error message on failure
     sim?: TenderlySimulation; // Tenderly result for the destination sim
     l2Params?: ExtractedCrossChainMessage;
@@ -227,7 +227,7 @@ type ContractObject = {
 };
 
 export type TenderlyPayload = {
-  network_id: '1' | '3' | '4' | '5' | '42' | '42161';
+  network_id: '1' | '3' | '4' | '5' | '42' | '42161' | '10' | '8453' | '1301' | '130' | '204' | '570' | '111' | '324';
   block_number?: number;
   transaction_index?: number;
   from: string;
