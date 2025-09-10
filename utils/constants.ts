@@ -30,3 +30,6 @@ export const GOVERNOR_ADDRESS = process.env.GOVERNOR_ADDRESS
   ? getAddress(process.env.GOVERNOR_ADDRESS)
   : null;
 export const REPORTS_OUTPUT_DIRECTORY = 'reports';
+
+export const SIM_LIMIT = process.env.SIM_LIMIT ? Number.parseInt(process.env.SIM_LIMIT) : null;
+export const START_BLOCK = process.env.START_BLOCK ? BigInt(process.env.START_BLOCK) : 0n;

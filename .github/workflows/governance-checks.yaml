@@ -77,6 +77,8 @@ jobs:
           TENDERLY_PROJECT_SLUG: ${{ secrets.TENDERLY_PROJECT_SLUG }}
           DAO_NAME: ${{ vars.DAO_NAME }}
           GOVERNOR_ADDRESS: ${{ vars.GOVERNOR_ADDRESS }}
+          SIM_LIMIT: ${{ vars.SIM_LIMIT }}
+          START_BLOCK: ${{ vars.START_BLOCK }}
 
       - name: Upload artifacts
         if: always()
