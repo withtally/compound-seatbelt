@@ -137,6 +137,7 @@ export async function getProposalIds(
   governorType: GovernorType,
   address: Address,
   latestBlockNum: bigint,
+  fromBlockNum = 0n,
 ): Promise<bigint[]> {
   if (governorType === 'bravo') {
     // Fetch all proposal IDs
@@ -145,7 +146,7 @@ export async function getProposalIds(
       address: governor.address,
       abi: GOVERNOR_ABI,
       eventName: 'ProposalCreated',
-      fromBlock: 0n,
+      fromBlock: fromBlockNum,
       toBlock: latestBlockNum,
     });
 
@@ -166,7 +167,7 @@ export async function getProposalIds(
     address,
     abi: GOVERNOR_OZ_ABI,
     eventName: 'ProposalCreated',
-    fromBlock: 0n,
+    fromBlock: fromBlockNum,
     toBlock: latestBlockNum,
   });
 

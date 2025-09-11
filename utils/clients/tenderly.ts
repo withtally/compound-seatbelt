@@ -621,7 +621,23 @@ export async function handleCrossChainSimulations(
 
   const destinationResults = await Promise.all(
     extractedMessages.map(async (message) => {
+      const chainId = Number(message.destinationChainId);
       console.log(`[CrossChainHandler] Simulating L2 message to: ${message.l2TargetAddress}`);
+      
+      // Check if Tenderly supports this network
+      if (!isTenderlySupportedNetwork(chainId)) {
+        console.warn(
+          `[CrossChainHandler] Network ${chainId} is not supported by Tenderly, skipping simulation for target: ${message.l2TargetAddress}`
+        );
+        return {
+          chainId,
+          bridgeType: message.bridgeType,
+          status: 'skipped' as const,
+          error: `Network ${chainId} not supported by Tenderly simulation API`,
+          l2Params: message,
+        };
+      }
+      
       try {
         const destinationPayload: TenderlyPayload = {
           network_id: message.destinationChainId.toString() as TenderlyPayload['network_id'],
@@ -670,7 +686,7 @@ export async function handleCrossChainSimulations(
       } catch (error: unknown) {
         console.error(
           `[CrossChainHandler] Error during destination simulation API call for L2 target ${message.l2TargetAddress}:`,
-          error,
+          (error as Error).message
         );
         return {
           chainId: Number(message.destinationChainId),
@@ -690,6 +706,16 @@ export async function handleCrossChainSimulations(
 }
 
 // --- Helper methods ---
+
+/**
+ * @notice Check if a network is supported by Tenderly for simulation
+ * @param chainId The chain ID to check
+ * @returns true if the network is supported by Tenderly
+ */
+function isTenderlySupportedNetwork(chainId: number): boolean {
+  const supportedNetworks = ['1', '3', '4', '5', '42', '42161', '10', '8453'];
+  return supportedNetworks.includes(chainId.toString());
+}
 
 /**
  * @notice Handles ETH value requirements for simulation payloads

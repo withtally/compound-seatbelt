@@ -173,11 +173,19 @@ async function main() {
   // Get proposal state to determine simulation type
   const state = await governor.read.state([proposalId]);
   const stateStr = String(state) as keyof typeof PROPOSAL_STATES;
-  const isExecuted = PROPOSAL_STATES[stateStr] === 'Executed';
+  const proposalState = PROPOSAL_STATES[stateStr];
+  
+  // Check if proposal can be simulated
+  if (proposalState === 'Canceled') {
+    console.error(`Cannot simulate canceled proposal ${proposalId}. Canceled proposals cannot be executed.`);
+    process.exit(1);
+  }
+  
+  const isExecuted = proposalState === 'Executed';
   const simType = isExecuted ? 'executed' : 'proposed';
 
   console.log(
-    `Running checks for ${DAO_NAME} proposal ${proposalId} (${PROPOSAL_STATES[stateStr]})...`,
+    `Running checks for ${DAO_NAME} proposal ${proposalId} (${proposalState})...`,
   );
 
   // Create simulation config

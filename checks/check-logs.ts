@@ -28,7 +28,7 @@ export const checkLogs: ProposalCheck = {
           const isTimelock = getAddress(addr) === deps.timelock.address;
           const shouldSkipLog =
             (isGovernor && log.name === 'ProposalExecuted') ||
-            (isTimelock && log.name === 'ExecuteTransaction' && log.inputs.length === 0);
+            (isTimelock && log.name === 'ExecuteTransaction' && (!log.inputs || log.inputs.length === 0));
           // Skip logs as required and add the rest to our logs object
           if (shouldSkipLog) return logs;
           if (!logs[addr]) logs[addr] = [];
@@ -54,14 +54,19 @@ export const checkLogs: ProposalCheck = {
     // Parse each event
     for (const [address, logs] of Object.entries(allEvents)) {
       // Use contracts array to get contract name of address
-      const contract = sim.contracts.find((c) => c.address === address);
-      info.push(await getContractName(contract, deps.chainConfig?.chainId));
+      const contract = sim.contracts.find((c) => getAddress(c.address) === getAddress(address));
+      if (!contract) {
+        // For unknown contracts, include the address for better debugging
+        info.push(`Unknown Contract at \`${getAddress(address)}\``);
+      } else {
+        info.push(await getContractName(contract, deps.chainConfig?.chainId));
+      }
 
       // Format log data for report
       for (const log of logs) {
         if (log.name) {
           // Log is decoded, format data as: VotingDelaySet(oldVotingDelay: value, newVotingDelay: value)
-          const parsedInputs = log.inputs.map((i) => `${i.soltype!.name}: ${i.value}`).join(', ');
+          const parsedInputs = log.inputs?.map((i) => `${i.soltype!.name}: ${i.value}`).join(', ') ?? '';
           info.push(`    \`${log.name}(${parsedInputs})\``);
         } else {
           // Log is not decoded, report the raw data

@@ -18,7 +18,7 @@ import type {
 import { cacheProposal, getCachedProposal, needsSimulation } from './utils/cache/proposalCache';
 import { getChainConfig, publicClient } from './utils/clients/client';
 import { handleCrossChainSimulations, simulate } from './utils/clients/tenderly';
-import { DAO_NAME, GOVERNOR_ADDRESS, REPORTS_OUTPUT_DIRECTORY, SIM_NAME } from './utils/constants';
+import { DAO_NAME, GOVERNOR_ADDRESS, REPORTS_OUTPUT_DIRECTORY, SIM_NAME, SIM_LIMIT, START_BLOCK } from './utils/constants';
 import {
   formatProposalId,
   getGovernor,
@@ -186,6 +186,7 @@ async function processSimulation(
  * @notice Simulate governance proposals and run proposal checks against them
  */
 async function main() {
+
   // --- Run simulations ---
   // Prepare array to store all simulation outputs
   const simOutputs: SimulationData[] = [];
@@ -245,26 +246,35 @@ async function main() {
 
     // Fetch all proposal IDs
     governorType = await inferGovernorType(GOVERNOR_ADDRESS);
-    const proposalIds = await getProposalIds(governorType, GOVERNOR_ADDRESS, latestBlock.number);
+    console.log(`Fetching proposal IDs from block ${START_BLOCK} to ${latestBlock.number}`);
+    const proposalIds = await getProposalIds(governorType, GOVERNOR_ADDRESS, latestBlock.number, START_BLOCK);
 
     const states = await Promise.all(
       proposalIds.map((id) => getGovernor(governorType, GOVERNOR_ADDRESS!).read.state([id])),
     );
     const simProposals: { id: bigint; simType: SimulationConfigBase['type']; state: string }[] =
-      proposalIds.map((id, i) => {
-        const stateNum = String(states[i]) as keyof typeof PROPOSAL_STATES;
-        const stateStr = PROPOSAL_STATES[stateNum] || 'Unknown';
-        const isExecuted = stateStr === 'Executed';
-        return {
-          id,
-          simType: isExecuted ? 'executed' : 'proposed',
-          state: stateStr,
-        };
-      });
+      proposalIds
+        .map((id, i) => {
+          const stateNum = String(states[i]) as keyof typeof PROPOSAL_STATES;
+          const stateStr = PROPOSAL_STATES[stateNum] || 'Unknown';
+          const isExecuted = stateStr === 'Executed';
+          return {
+            id,
+            simType: (isExecuted ? 'executed' : 'proposed') as SimulationConfigBase['type'],
+            state: stateStr,
+          };
+        })
+        .filter((proposal) => {
+          if (proposal.state === 'Canceled') {
+            console.log(`Skipping canceled proposal ${proposal.id}. Canceled proposals cannot be simulated.`);
+            return false;
+          }
+          return true;
+        });
 
     // If we aren't simulating all proposals, filter down to just the active ones. For now we
     // assume we're simulating all by default
-    const proposalsToSimulate: typeof simProposals = [];
+    let proposalsToSimulate: typeof simProposals = [];
     const cachedProposals: typeof simProposals = [];
 
     for (const simProposal of simProposals) {
@@ -304,6 +314,11 @@ async function main() {
         }
         simOutputs.push(cachedData);
       }
+    }
+
+    if (SIM_LIMIT && SIM_LIMIT < proposalsToSimulate.length) {
+      console.log(`Limiting simulations to most recent ${SIM_LIMIT} proposals.`);
+      proposalsToSimulate = proposalsToSimulate.slice(proposalsToSimulate.length - SIM_LIMIT);
     }
 
     // Simulate proposals that need simulation
