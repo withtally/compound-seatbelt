@@ -299,8 +299,8 @@ export async function getImplementation(
   return null;
 }
 
-export function formatProposalId(governorType: GovernorType, id: string | bigint) {
+export function formatProposalId(_governorType: GovernorType, id: string | bigint) {
   const bigIntId = typeof id === 'string' ? BigInt(id) : id;
-  if (governorType === 'oz') return `0x${bigIntId.toString(16)}`;
+  // Always return decimal format for consistency across cache and report files
   return bigIntId.toString();
 }
