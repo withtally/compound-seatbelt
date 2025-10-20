@@ -55,6 +55,23 @@ const TENDERLY_FETCH_OPTIONS = {
   headers: { 'X-Access-Key': TENDERLY_ACCESS_TOKEN },
 };
 
+/**
+ * Sanitizes error reasons by removing null bytes and handling empty strings
+ * @param reason The raw error reason string that may contain null bytes
+ * @returns A sanitized error reason safe for JSON and PostgreSQL storage
+ */
+function sanitizeErrorReason(reason: string | undefined | null): string {
+  if (!reason) return '(no revert reason)';
+
+  const sanitized = reason
+    .split('')
+    .filter((char) => char.charCodeAt(0) !== 0) // Remove null bytes
+    .join('')
+    .trim();
+
+  return sanitized || '(no revert reason)';
+}
+
 // Placeholder sender for simulations.
 // IMPORTANT: This MUST remain an empty EOA on mainnet (no code, nonce = 0).
 // The test at tests/placeholder-constant.test.ts enforces this invariant.
@@ -674,7 +691,8 @@ export async function handleCrossChainSimulations(
         console.error(
           `[CrossChainHandler] Destination sim FAILED for L2 target: ${message.l2TargetAddress}`,
         );
-        const errorMsg = destSim.transaction?.transaction_info?.call_trace?.error_reason;
+        const rawErrorMsg = destSim.transaction?.transaction_info?.call_trace?.error_reason;
+        const errorMsg = sanitizeErrorReason(rawErrorMsg);
         return {
           chainId: Number(message.destinationChainId),
           bridgeType: message.bridgeType,

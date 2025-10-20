@@ -3,6 +3,23 @@ import type { ProposalCheck, StateDiff } from '../types';
 import { getContractName } from '../utils/clients/tenderly';
 
 /**
+ * Sanitizes error reasons by removing null bytes and handling empty strings
+ * @param reason The raw error reason string that may contain null bytes
+ * @returns A sanitized error reason safe for JSON and PostgreSQL storage
+ */
+function sanitizeErrorReason(reason: string | undefined | null): string {
+  if (!reason) return '(no revert reason)';
+
+  const sanitized = reason
+    .split('')
+    .filter((char) => char.charCodeAt(0) !== 0) // Remove null bytes
+    .join('')
+    .trim();
+
+  return sanitized || '(no revert reason)';
+}
+
+/**
  * Reports all state changes from the proposal
  */
 export const checkStateChanges: ProposalCheck = {
@@ -14,12 +31,18 @@ export const checkStateChanges: ProposalCheck = {
     if (!sim.transaction.status) {
       const txInfo = sim.transaction.transaction_info;
       const callTraceError = txInfo.call_trace.error_reason;
-      const reason = callTraceError
+      const rawReason = callTraceError
         ? callTraceError
         : txInfo.stack_trace
           ? txInfo.stack_trace[0].error_reason
           : 'unknown error';
-      const error = `Transaction reverted with reason: ${reason}`;
+
+      // Sanitize the reason to remove null bytes and handle empty reasons
+      const sanitizedReason = sanitizeErrorReason(rawReason);
+
+      const error = sanitizedReason === '(no revert reason)'
+        ? 'Transaction reverted with no reason provided'
+        : `Transaction reverted with reason: ${sanitizedReason}`;
       return { info: [], warnings: [], errors: [error] };
     }
 
