@@ -20,7 +20,7 @@ import {
   getGovernor,
   getProposalIds,
   getTimelock,
-  inferGovernorType,
+  // inferGovernorType, // Commented out - Compound is always 'oz'
 } from './utils/contracts/governor';
 import { PROPOSAL_STATES } from './utils/contracts/governor-bravo';
 
@@ -145,7 +145,9 @@ async function main() {
   if (!DAO_NAME) throw new Error('Must provide a DAO_NAME');
 
   // Get governor type and contract
-  const governorType = await inferGovernorType(GOVERNOR_ADDRESS);
+  // Note: Compound Governor is always 'oz' type, so we skip inference to avoid ugly error messages
+  const governorType = 'oz' as const;
+  // const governorType = await inferGovernorType(GOVERNOR_ADDRESS);
 
   // Set the proposal ID to check - default to latest proposal if no argument provided
   let proposalId: bigint;

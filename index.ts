@@ -24,7 +24,7 @@ import {
   getGovernor,
   getProposalIds,
   getTimelock,
-  inferGovernorType,
+  // inferGovernorType, // Commented out - Compound is always 'oz'
 } from './utils/contracts/governor';
 import { PROPOSAL_STATES } from './utils/contracts/governor-bravo';
 
@@ -202,7 +202,9 @@ async function main() {
     }
     const config: SimulationConfig = await import(configPath).then((d) => d.config);
 
-    governorType = await inferGovernorType(config.governorAddress);
+    // Compound Governor is always 'oz' type, so we skip inference to avoid ugly error messages
+    governorType = 'oz' as const;
+    // governorType = await inferGovernorType(config.governorAddress);
 
     // Run simulation pipeline (source + cross-chain)
     console.log(`[Index] Simulating source chain for ${SIM_NAME}...`);
@@ -245,7 +247,9 @@ async function main() {
     if (!latestBlock.number) throw new Error('Failed to get latest block number');
 
     // Fetch all proposal IDs
-    governorType = await inferGovernorType(GOVERNOR_ADDRESS);
+    // Compound Governor is always 'oz' type, so we skip inference to avoid ugly error messages
+    governorType = 'oz' as const;
+    // governorType = await inferGovernorType(GOVERNOR_ADDRESS);
     console.log(`Fetching proposal IDs from block ${START_BLOCK} to ${latestBlock.number}`);
     const proposalIds = await getProposalIds(governorType, GOVERNOR_ADDRESS, latestBlock.number, START_BLOCK);
 
