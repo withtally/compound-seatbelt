@@ -25,7 +25,6 @@ import type {
   TenderlyPayload,
   TenderlySimulation,
 } from '../../types.d';
-import { GOVERNOR_ABI } from '../abis/GovernorBravo';
 import { parseArbitrumL1L2Messages } from '../bridges/arbitrum';
 import { parseOptimismL1L2Messages } from '../bridges/optimism';
 import {
@@ -124,8 +123,175 @@ interface SimulationPayloadParams {
  */
 export async function simulate(config: SimulationConfig) {
   if (config.type === 'executed') return await simulateExecuted(config);
-  if (config.type === 'proposed') return await simulateProposed(config);
+  if (config.type === 'proposed') return await simulateProposedCompound(config);
   return await simulateNew(config);
+}
+
+async function simulateProposedCompound(config: SimulationConfigProposed): Promise<SimulationResult> {
+  const { governorAddress, proposalId } = config;
+
+  // Compound Governor is always inferred as 'oz' type (OpenZeppelin-based)
+  const governorType = 'oz' as const;
+
+  // --- Get details about the proposal we're simulating ---
+  const chainId = await publicClient.getChainId();
+  const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
+  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
+  const blockRange = [0n, latestBlock.number];
+  const governor = getGovernor(governorType, governorAddress);
+  const timelock = await getTimelock(governorType, governorAddress);
+  const proposal = await getProposal(governorType, governorAddress, proposalId);
+
+  // Compound Governor uses OZ-style ABI and events
+  const proposalCreatedEvents = await publicClient.getContractEvents({
+    address: governorAddress,
+    abi: GOVERNOR_OZ_ABI,
+    eventName: 'ProposalCreated',
+    fromBlock: blockRange[0],
+    toBlock: blockRange[1],
+  });
+
+  const proposalCreatedEvent = proposalCreatedEvents.find((e) => e.args.proposalId === proposalId);
+  if (!proposalCreatedEvent)
+    throw new Error(`Proposal creation log for #${proposalId} not found in governor logs`);
+  const { targets, signatures: sigs, calldatas, description, values } = proposalCreatedEvent.args;
+  if (!targets || !values || !sigs || !calldatas || !description) {
+    throw new Error('Missing required proposal data in creation event');
+  }
+
+  // --- Prepare simulation configuration ---
+  // We need the following state conditions to be true to successfully simulate a proposal:
+  //   - proposal.canceled == false
+  //   - proposal.executed == false
+  //   - block.number > proposal.endBlock
+  //   - proposal.forVotes > proposal.againstVotes
+  //   - proposal.forVotes > quorumVotes
+  //   - proposal.eta !== 0
+  //   - block.timestamp >= proposal.eta
+  //   - block.timestamp <  proposal.eta + timelock.GRACE_PERIOD()
+  //   - queuedTransactions[txHash] = true for each action in the proposal
+
+  // Get voting token and total supply
+  const votingToken = await getVotingToken(governorType, governorAddress, proposal.id);
+  const votingTokenSupply = await votingToken.read.totalSupply(); // used to manipulate vote count
+
+  // Set `from` arbitrarily.
+  const from = DEFAULT_SIMULATION_ADDRESS;
+
+  // Use the next block after latest for simulation
+  const simBlock = latestBlock.number + 1n;
+  const simTimestamp = latestBlock.timestamp + 1n;
+  const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
+
+  // Compute transaction hashes used by the Timelock
+  const txHashes = computeTransactionHashes(
+    targets as readonly `0x${string}`[],
+    values,
+    sigs as readonly `0x${string}`[],
+    calldatas as readonly `0x${string}`[],
+    eta,
+  );
+
+  // Generate the state object needed to mark the transactions as queued in the Timelock's storage
+  const timelockStorageObj: Record<string, string> = {};
+  for (const hash of txHashes) {
+    timelockStorageObj[`queuedTransactions[${hash}]`] = 'true';
+  }
+
+  // Add OZ-style timelock timestamp
+  const id = hashOperationBatchOz(
+    [...targets],
+    [...values],
+    [...calldatas],
+    zeroHash,
+    keccak256(toBytes(description)),
+  );
+  timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
+
+  const governorStateOverrides = buildCompoundGovernorStateOverrides({
+    governorType,
+    proposalId,
+    votingTokenSupply,
+    eta,
+    simBlock,
+    // No targets/values/signatures/calldatas for existing proposals
+  });
+
+  // Encode timelock storage using Tenderly's encoding service
+  const timelockStateOverrides: StateOverridesPayload = {
+    networkID: '1',
+    stateOverrides: {
+      [timelock.address]: {
+        value: timelockStorageObj,
+      },
+    },
+  };
+  const encodedTimelockStorage = await sendEncodeRequest(timelockStateOverrides);
+
+  // Combine encoded timelock storage with raw governor storage slots
+  const storageObj = {
+    stateOverrides: {
+      [timelock.address.toLowerCase()]: encodedTimelockStorage.stateOverrides[timelock.address.toLowerCase()],
+      [governor.address.toLowerCase()]: {
+        value: governorStateOverrides,
+      },
+    },
+  };
+
+  // --- Simulate it ---
+  // Note: The Tenderly API is sensitive to the input types, so all formatting below (e.g. stripping
+  // leading zeroes, padding with zeros, strings vs. hex, etc.) are all intentional decisions to
+  // ensure Tenderly properly parses the simulation payload
+  const descriptionHash = keccak256(toBytes(description));
+  const executeInputs = [targets, values, calldatas, descriptionHash];
+
+  const simulationPayload = buildSimulationPayload({
+    governorType,
+    governor,
+    timelock,
+    from,
+    latestBlock,
+    simBlock,
+    simTimestamp,
+    storageObj,
+    executeInputs,
+    saveIfFails: true, // Different for proposed
+  });
+
+  const formattedProposal: ProposalEvent = {
+    id: proposalId,
+    proposalId,
+    proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_SIMULATION_ADDRESS,
+    startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
+    endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
+    description: proposalCreatedEvent.args.description ?? '',
+    targets: [...(proposalCreatedEvent.args.targets ?? [])],
+    values: [...values],
+    signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
+    calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
+  };
+
+  // Handle ETH transfers if needed
+  handleETHValueRequirements(simulationPayload, values, from, timelock.address);
+
+  // Run the simulation
+  const sim = await sendSimulation(simulationPayload);
+
+  const deps: ProposalData = {
+    governor,
+    timelock,
+    publicClient,
+    chainConfig: getChainConfig(1), // Mainnet chain config
+    targets: proposalCreatedEvent.args.targets?.map((target: string) => target) ?? [],
+    touchedContracts: sim.contracts.map((contract) => contract.address),
+  };
+
+  // Get block details for proposal creation timing
+  const proposalCreatedBlock = await publicClient.getBlock({
+    blockNumber: proposalCreatedEvent.blockNumber,
+  });
+
+  return { sim, proposal: formattedProposal, latestBlock, deps, proposalCreatedBlock };
 }
 
 /**
@@ -298,187 +464,188 @@ export async function simulateNew(config: SimulationConfigNew): Promise<Simulati
  * @notice Simulates execution of an on-chain proposal that has not yet been executed
  * @param config Configuration object
  */
-async function simulateProposed(config: SimulationConfigProposed): Promise<SimulationResult> {
-  const { governorAddress, governorType, proposalId } = config;
+// Note(@chase): Commented out because this does not work for compound
+// async function simulateProposed(config: SimulationConfigProposed): Promise<SimulationResult> {
+//   const { governorAddress, governorType, proposalId } = config;
 
-  // --- Get details about the proposal we're simulating ---
-  const chainId = await publicClient.getChainId();
-  const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
-  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
-  const blockRange = [0n, latestBlock.number];
-  const governor = getGovernor(governorType, governorAddress);
-  const timelock = await getTimelock(governorType, governorAddress);
-  const proposal = await getProposal(governorType, governorAddress, proposalId);
-  const abi = governorType === 'bravo' ? GOVERNOR_ABI : GOVERNOR_OZ_ABI;
+//   // --- Get details about the proposal we're simulating ---
+//   const chainId = await publicClient.getChainId();
+//   const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
+//   const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
+//   const blockRange = [0n, latestBlock.number];
+//   const governor = getGovernor(governorType, governorAddress);
+//   const timelock = await getTimelock(governorType, governorAddress);
+//   const proposal = await getProposal(governorType, governorAddress, proposalId);
+//   const abi = governorType === 'bravo' ? GOVERNOR_ABI : GOVERNOR_OZ_ABI;
 
-  const proposalCreatedEvents = await publicClient.getContractEvents({
-    address: governorAddress,
-    abi,
-    eventName: 'ProposalCreated',
-    fromBlock: blockRange[0],
-    toBlock: blockRange[1],
-  });
+//   const proposalCreatedEvents = await publicClient.getContractEvents({
+//     address: governorAddress,
+//     abi,
+//     eventName: 'ProposalCreated',
+//     fromBlock: blockRange[0],
+//     toBlock: blockRange[1],
+//   });
 
-  const proposalCreatedEvent = proposalCreatedEvents.filter((e) => {
-    const args = e.args;
-    if (governorType === 'bravo' && 'id' in args) {
-      return args.id === proposalId;
-    }
-    if (governorType === 'oz' && 'proposalId' in args) {
-      return args.proposalId === proposalId;
-    }
-    return false;
-  })[0];
-  if (!proposalCreatedEvent)
-    throw new Error(`Proposal creation log for #${proposalId} not found in governor logs`);
-  const { targets, signatures: sigs, calldatas, description, values } = proposalCreatedEvent.args;
-  if (!targets || !values || !sigs || !calldatas || !description) {
-    throw new Error('Missing required proposal data in creation event');
-  }
+//   const proposalCreatedEvent = proposalCreatedEvents.filter((e) => {
+//     const args = e.args;
+//     if (governorType === 'bravo' && 'id' in args) {
+//       return args.id === proposalId;
+//     }
+//     if (governorType === 'oz' && 'proposalId' in args) {
+//       return args.proposalId === proposalId;
+//     }
+//     return false;
+//   })[0];
+//   if (!proposalCreatedEvent)
+//     throw new Error(`Proposal creation log for #${proposalId} not found in governor logs`);
+//   const { targets, signatures: sigs, calldatas, description, values } = proposalCreatedEvent.args;
+//   if (!targets || !values || !sigs || !calldatas || !description) {
+//     throw new Error('Missing required proposal data in creation event');
+//   }
 
-  // --- Prepare simulation configuration ---
-  // We need the following state conditions to be true to successfully simulate a proposal:
-  //   - proposal.canceled == false
-  //   - proposal.executed == false
-  //   - block.number > proposal.endBlock
-  //   - proposal.forVotes > proposal.againstVotes
-  //   - proposal.forVotes > quorumVotes
-  //   - proposal.eta !== 0
-  //   - block.timestamp >= proposal.eta
-  //   - block.timestamp <  proposal.eta + timelock.GRACE_PERIOD()
-  //   - queuedTransactions[txHash] = true for each action in the proposal
+//   // --- Prepare simulation configuration ---
+//   // We need the following state conditions to be true to successfully simulate a proposal:
+//   //   - proposal.canceled == false
+//   //   - proposal.executed == false
+//   //   - block.number > proposal.endBlock
+//   //   - proposal.forVotes > proposal.againstVotes
+//   //   - proposal.forVotes > quorumVotes
+//   //   - proposal.eta !== 0
+//   //   - block.timestamp >= proposal.eta
+//   //   - block.timestamp <  proposal.eta + timelock.GRACE_PERIOD()
+//   //   - queuedTransactions[txHash] = true for each action in the proposal
 
-  // Get voting token and total supply
-  const votingToken = await getVotingToken(governorType, governorAddress, proposal.id);
-  const votingTokenSupply = await votingToken.read.totalSupply(); // used to manipulate vote count
+//   // Get voting token and total supply
+//   const votingToken = await getVotingToken(governorType, governorAddress, proposal.id);
+//   const votingTokenSupply = await votingToken.read.totalSupply(); // used to manipulate vote count
 
-  // Set `from` arbitrarily.
-  const from = DEFAULT_SIMULATION_ADDRESS;
+//   // Set `from` arbitrarily.
+//   const from = DEFAULT_SIMULATION_ADDRESS;
 
-  // For Bravo governors, we use the block right after the proposal ends, and for OZ
-  // governors we arbitrarily use the next block number.
-  const simBlock =
-    governorType === 'bravo'
-      ? (proposal.endBlock ?? latestBlock.number) + 1n
-      : latestBlock.number + 1n;
+//   // For Bravo governors, we use the block right after the proposal ends, and for OZ
+//   // governors we arbitrarily use the next block number.
+//   const simBlock =
+//     governorType === 'bravo'
+//       ? (proposal.endBlock ?? latestBlock.number) + 1n
+//       : latestBlock.number + 1n;
 
-  // For OZ governors we are given the earliest possible execution time. For Bravo governors, we
-  // Compute the approximate earliest possible execution time based on governance parameters. This
-  // can only be approximate because voting period is defined in blocks, not as a timestamp. We
-  // assume 12 second block times to prefer underestimating timestamp rather than overestimating,
-  // and we prefer underestimating to avoid simulations reverting in cases where governance
-  // proposals call methods that pass in a start timestamp that must be lower than the current
-  // block timestamp (represented by the `simTimestamp` variable below)
-  const simTimestamp =
-    governorType === 'bravo'
-      ? latestBlock.timestamp + (simBlock - (proposal.endBlock ?? latestBlock.number)) * 12n
-      : latestBlock.timestamp + 1n;
-  const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
+//   // For OZ governors we are given the earliest possible execution time. For Bravo governors, we
+//   // Compute the approximate earliest possible execution time based on governance parameters. This
+//   // can only be approximate because voting period is defined in blocks, not as a timestamp. We
+//   // assume 12 second block times to prefer underestimating timestamp rather than overestimating,
+//   // and we prefer underestimating to avoid simulations reverting in cases where governance
+//   // proposals call methods that pass in a start timestamp that must be lower than the current
+//   // block timestamp (represented by the `simTimestamp` variable below)
+//   const simTimestamp =
+//     governorType === 'bravo'
+//       ? latestBlock.timestamp + (simBlock - (proposal.endBlock ?? latestBlock.number)) * 12n
+//       : latestBlock.timestamp + 1n;
+//   const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
 
-  // Compute transaction hashes used by the Timelock
-  const txHashes = computeTransactionHashes(
-    targets as readonly `0x${string}`[],
-    values,
-    sigs as readonly `0x${string}`[],
-    calldatas as readonly `0x${string}`[],
-    eta,
-  );
+//   // Compute transaction hashes used by the Timelock
+//   const txHashes = computeTransactionHashes(
+//     targets as readonly `0x${string}`[],
+//     values,
+//     sigs as readonly `0x${string}`[],
+//     calldatas as readonly `0x${string}`[],
+//     eta,
+//   );
 
-  // Generate the state object needed to mark the transactions as queued in the Timelock's storage
-  const timelockStorageObj: Record<string, string> = {};
-  for (const hash of txHashes) {
-    timelockStorageObj[`queuedTransactions[${hash}]`] = 'true';
-  }
+//   // Generate the state object needed to mark the transactions as queued in the Timelock's storage
+//   const timelockStorageObj: Record<string, string> = {};
+//   for (const hash of txHashes) {
+//     timelockStorageObj[`queuedTransactions[${hash}]`] = 'true';
+//   }
 
-  if (governorType === 'oz') {
-    const id = hashOperationBatchOz(
-      [...targets],
-      [...values],
-      [...calldatas],
-      zeroHash,
-      keccak256(toBytes(description)),
-    );
-    timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
-  }
+//   if (governorType === 'oz') {
+//     const id = hashOperationBatchOz(
+//       [...targets],
+//       [...values],
+//       [...calldatas],
+//       zeroHash,
+//       keccak256(toBytes(description)),
+//     );
+//     timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
+//   }
 
-  const governorStateOverrides = buildGovernorStateOverrides({
-    governorType,
-    proposalId,
-    votingTokenSupply,
-    eta,
-    simBlock,
-    // No targets/values/signatures/calldatas for existing proposals
-  });
+//   const governorStateOverrides = buildGovernorStateOverrides({
+//     governorType,
+//     proposalId,
+//     votingTokenSupply,
+//     eta,
+//     simBlock,
+//     // No targets/values/signatures/calldatas for existing proposals
+//   });
 
-  const stateOverrides: StateOverridesPayload = {
-    networkID: '1',
-    stateOverrides: {
-      [timelock.address]: {
-        value: timelockStorageObj,
-      },
-      [governor.address]: {
-        value: governorStateOverrides,
-      },
-    },
-  };
-  const storageObj = await sendEncodeRequest(stateOverrides);
+//   const stateOverrides: StateOverridesPayload = {
+//     networkID: '1',
+//     stateOverrides: {
+//       [timelock.address]: {
+//         value: timelockStorageObj,
+//       },
+//       [governor.address]: {
+//         value: governorStateOverrides,
+//       },
+//     },
+//   };
+//   const storageObj = await sendEncodeRequest(stateOverrides);
 
-  // --- Simulate it ---
-  // Note: The Tenderly API is sensitive to the input types, so all formatting below (e.g. stripping
-  // leading zeroes, padding with zeros, strings vs. hex, etc.) are all intentional decisions to
-  // ensure Tenderly properly parses the simulation payload
-  const descriptionHash = keccak256(toBytes(description));
-  const executeInputs =
-    governorType === 'bravo' ? [proposalId] : [targets, values, calldatas, descriptionHash];
+//   // --- Simulate it ---
+//   // Note: The Tenderly API is sensitive to the input types, so all formatting below (e.g. stripping
+//   // leading zeroes, padding with zeros, strings vs. hex, etc.) are all intentional decisions to
+//   // ensure Tenderly properly parses the simulation payload
+//   const descriptionHash = keccak256(toBytes(description));
+//   const executeInputs =
+//     governorType === 'bravo' ? [proposalId] : [targets, values, calldatas, descriptionHash];
 
-  const simulationPayload = buildSimulationPayload({
-    governorType,
-    governor,
-    timelock,
-    from,
-    latestBlock,
-    simBlock,
-    simTimestamp,
-    storageObj,
-    executeInputs,
-    saveIfFails: true, // Different for proposed
-  });
+//   const simulationPayload = buildSimulationPayload({
+//     governorType,
+//     governor,
+//     timelock,
+//     from,
+//     latestBlock,
+//     simBlock,
+//     simTimestamp,
+//     storageObj,
+//     executeInputs,
+//     saveIfFails: true, // Different for proposed
+//   });
 
-  const formattedProposal: ProposalEvent = {
-    id: proposalId,
-    proposalId,
-    proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_SIMULATION_ADDRESS,
-    startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
-    endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
-    description: proposalCreatedEvent.args.description ?? '',
-    targets: [...(proposalCreatedEvent.args.targets ?? [])],
-    values: [...values],
-    signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
-    calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
-  };
+//   const formattedProposal: ProposalEvent = {
+//     id: proposalId,
+//     proposalId,
+//     proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_SIMULATION_ADDRESS,
+//     startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
+//     endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
+//     description: proposalCreatedEvent.args.description ?? '',
+//     targets: [...(proposalCreatedEvent.args.targets ?? [])],
+//     values: [...values],
+//     signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
+//     calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
+//   };
 
-  // Handle ETH transfers if needed
-  handleETHValueRequirements(simulationPayload, values, from, timelock.address);
+//   // Handle ETH transfers if needed
+//   handleETHValueRequirements(simulationPayload, values, from, timelock.address);
 
-  // Run the simulation
-  const sim = await sendSimulation(simulationPayload);
+//   // Run the simulation
+//   const sim = await sendSimulation(simulationPayload);
 
-  const deps: ProposalData = {
-    governor,
-    timelock,
-    publicClient,
-    chainConfig: getChainConfig(1), // Mainnet chain config
-    targets: proposalCreatedEvent.args.targets?.map((target: string) => target) ?? [],
-    touchedContracts: sim.contracts.map((contract) => contract.address),
-  };
+//   const deps: ProposalData = {
+//     governor,
+//     timelock,
+//     publicClient,
+//     chainConfig: getChainConfig(1), // Mainnet chain config
+//     targets: proposalCreatedEvent.args.targets?.map((target: string) => target) ?? [],
+//     touchedContracts: sim.contracts.map((contract) => contract.address),
+//   };
 
-  // Get block details for proposal creation timing
-  const proposalCreatedBlock = await publicClient.getBlock({
-    blockNumber: proposalCreatedEvent.blockNumber,
-  });
+//   // Get block details for proposal creation timing
+//   const proposalCreatedBlock = await publicClient.getBlock({
+//     blockNumber: proposalCreatedEvent.blockNumber,
+//   });
 
-  return { sim, proposal: formattedProposal, latestBlock, deps, proposalCreatedBlock };
-}
+//   return { sim, proposal: formattedProposal, latestBlock, deps, proposalCreatedBlock };
+// }
 
 /**
  * @notice Simulates execution of an already-executed governance proposal
@@ -824,6 +991,111 @@ function buildSimulationPayload(params: SimulationPayloadParams): TenderlyPayloa
       },
     },
   };
+}
+
+/**
+ * @notice Builds governor state overrides for simulation
+ * @param params Configuration parameters for governor overrides
+ */
+/**
+ * Computes storage slots for the Compound Governor which uses ERC-7201 namespaced storage
+ * @param proposalId The proposal ID
+ * @returns Storage slots for various proposal fields
+ */
+function getCompoundGovernorSlots(proposalId: bigint) {
+  // ERC-7201 namespace locations from the Compound Governor contracts:
+  const GOVERNOR_STORAGE_LOCATION = BigInt('0x7c712897014dbe49c045ef1299aa2d5f9e67e48eea4403efa21f1e0f3ac0cb00');
+  const COUNTING_FRACTIONAL_STORAGE_LOCATION = BigInt('0xd073797d8f9d07d835a3fc13195afeafd2f137da609f97a44f7a3aa434170800');
+  const SEQUENTIAL_PROPOSAL_ID_STORAGE_LOCATION = BigInt('0x357e1d0c89980520b3654c57f444238d75a15e5f41d389a090caabe54617d800');
+
+  // _proposals mapping is at offset 1 in GovernorStorage (after _name at offset 0)
+  const proposalsMapSlot = GOVERNOR_STORAGE_LOCATION + 1n;
+
+  // _proposalVotes mapping is at offset 0 in GovernorCountingFractionalStorage
+  const proposalVotesMapSlot = COUNTING_FRACTIONAL_STORAGE_LOCATION;
+
+  // _proposalDetails mapping is at offset 2 in GovernorSequentialProposalIdStorage (after _nextProposalId and _proposalIds)
+  const proposalDetailsMapSlot = SEQUENTIAL_PROPOSAL_ID_STORAGE_LOCATION + 2n;
+
+  // Compute the storage slot for this specific proposal ID in each mapping
+  // Storage slot = keccak256(proposalId . mappingSlot)
+  const proposalCoreSlot = keccak256(encodeAbiParameters(
+    [{ type: 'uint256' }, { type: 'uint256' }],
+    [proposalId, proposalsMapSlot]
+  ));
+
+  const proposalVotesSlot = keccak256(encodeAbiParameters(
+    [{ type: 'uint256' }, { type: 'uint256' }],
+    [proposalId, proposalVotesMapSlot]
+  ));
+
+  const proposalDetailsSlot = keccak256(encodeAbiParameters(
+    [{ type: 'uint256' }, { type: 'uint256' }],
+    [proposalId, proposalDetailsMapSlot]
+  ));
+
+  return {
+    // ProposalCore struct offsets
+    // Slot 0: proposer (160) + voteStart (48) + voteDuration (32) + executed (8) + canceled (8) = 256 bits
+    // Slot 1: etaSeconds (48)
+    proposalCoreSlot0: proposalCoreSlot, // proposer, voteStart, voteDuration, executed, canceled
+    etaSecondsSlot: toHex(BigInt(proposalCoreSlot) + 1n), // etaSeconds in next slot
+
+    // ProposalVote struct offsets
+    againstVotesSlot: proposalVotesSlot,
+    forVotesSlot: toHex(BigInt(proposalVotesSlot) + 1n),
+    abstainVotesSlot: toHex(BigInt(proposalVotesSlot) + 2n),
+
+    // ProposalDetails struct offsets (arrays stored separately)
+    descriptionHashSlot: toHex(BigInt(proposalDetailsSlot) + 3n), // after targets, values, calldatas arrays
+  };
+}
+
+function buildCompoundGovernorStateOverrides(params: GovernorOverrideParams): Record<string, string> {
+  const {
+    proposalId,
+    votingTokenSupply,
+    eta,
+    simBlock,
+    proposal,
+  } = params;
+
+  // The new Compound Governor uses ERC-7201 namespaced storage
+  // We need to manually compute storage slots instead of using named locations
+  const slots = getCompoundGovernorSlots(proposalId);
+
+  // Set voteStart and voteDuration such that voting has ended
+  const voteStart = simBlock > 1000n ? simBlock - 1000n : 1n;
+  const voteDuration = 500n;
+
+  // Pack ProposalCore struct across two slots
+  // Slot 0: proposer (160 bits) | voteStart (48 bits) | voteDuration (32 bits) | executed (8 bits) | canceled (8 bits)
+  // Slot 1: etaSeconds (48 bits)
+  const proposer = BigInt(proposal?.proposer?.toString() || DEFAULT_SIMULATION_ADDRESS);
+  const packedSlot0 =
+    (proposer) |
+    (voteStart << 160n) |
+    (voteDuration << 208n) |
+    (0n << 240n) | // executed = false
+    (0n << 248n);  // canceled = false
+
+  const packedSlot1 = BigInt(eta); // etaSeconds
+
+  const overrides: Record<string, string> = {
+    // ProposalCore packed across two slots
+    [slots.proposalCoreSlot0]: toHex(packedSlot0, { size: 32 }),
+    [slots.etaSecondsSlot]: toHex(packedSlot1, { size: 32 }),
+
+    // ProposalVote fields
+    [slots.againstVotesSlot]: toHex(0n, { size: 32 }),
+    [slots.forVotesSlot]: toHex(votingTokenSupply, { size: 32 }),
+    [slots.abstainVotesSlot]: toHex(0n, { size: 32 }),
+
+    // ProposalDetails - set descriptionHash so proposal is considered existent
+    [slots.descriptionHashSlot]: keccak256(toBytes(proposal?.description || 'test')),
+  };
+
+  return overrides;
 }
 
 /**
