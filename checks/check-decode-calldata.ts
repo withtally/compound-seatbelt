@@ -335,6 +335,7 @@ async function prettifyCalldata(
   }
 
   // Try to decode using Etherscan ABI first
+  let etherscanDecodeError: string | null = null;
   try {
     const decoded = await BlockExplorerFactory.decodeFunctionWithAbi(
       target,
@@ -359,15 +360,11 @@ async function prettifyCalldata(
       description += `)\` on ${contractIdentifier} (decoded from ABI)`;
       return description;
     }
-
-    warnings.push(
-      `Failed to decode function with selector ${selector} for contract ${target} using Etherscan ABI`,
-    );
+    // Don't add warning here - we may still decode via token handlers or Tenderly data
   } catch (error) {
     console.warn(`Failed to decode using Etherscan ABI for ${target}:`, error);
-    warnings.push(
-      `Error decoding function with selector ${selector} for contract ${target}: ${error}`,
-    );
+    etherscanDecodeError = String(error);
+    // Don't add warning here - we may still decode via token handlers or Tenderly data
   }
 
   // Handle token-related actions
@@ -377,9 +374,25 @@ async function prettifyCalldata(
     return TOKEN_HANDLERS[selector](call, decimals || 0, symbol ?? null, contractIdentifier);
   }
 
-  // Generic handling for non-token actions
+  // Generic handling for non-token actions using Tenderly decoded data
   const sig = getSignature(call);
-  return getDescription(contractIdentifier, sig, call);
+  const description = getDescription(contractIdentifier, sig, call);
+
+  // Only add a warning if we couldn't decode through ANY method (including Tenderly)
+  // This is indicated by the description containing "(not decoded)"
+  if (description.includes('(not decoded)')) {
+    if (etherscanDecodeError) {
+      warnings.push(
+        `Error decoding function with selector ${selector} for contract ${target}: ${etherscanDecodeError}`,
+      );
+    } else {
+      warnings.push(
+        `Failed to decode function with selector ${selector} for contract ${target} using Etherscan ABI`,
+      );
+    }
+  }
+
+  return description;
 }
 
 // Handlers for token-related function calls

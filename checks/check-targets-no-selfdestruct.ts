@@ -122,14 +122,10 @@ async function checkNoSelfdestructs(
   );
   warn.push(...suspiciousWarnings);
 
-  // Only suppress legitimate placeholder warnings if there are no other warnings
-  if (warn.length === 0 && legitPlaceholderWarnings.length > 0) {
-    // No real warnings, so we can safely suppress legitimate placeholder warnings
-    // (legitPlaceholderWarnings are discarded)
-  } else {
-    // There are real warnings, so show ALL warnings including legitimate placeholder ones
-    warn.push(...legitPlaceholderWarnings);
-  }
+  // Always suppress legitimate placeholder warnings since the simulation placeholder is always benign
+  // and provides no security value to users. Only suspicious warnings (where the placeholder label
+  // doesn't match the hardcoded DEFAULT_SIMULATION_ADDRESS) are shown above.
+  // Note: legitPlaceholderWarnings are intentionally discarded here
   return { info, warn, error };
 }
 
