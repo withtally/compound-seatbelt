@@ -182,7 +182,12 @@ async function main() {
     console.error(`Cannot simulate canceled proposal ${proposalId}. Canceled proposals cannot be executed.`);
     process.exit(1);
   }
-  
+
+  if (proposalState === 'Active' || proposalState === 'Pending') {
+    console.log(`ℹ️  Note: Proposal ${proposalId} is ${proposalState} (still in voting period).`);
+    console.log("   Simulation will run at a future block after voting ends.\n");
+  }
+
   const isExecuted = proposalState === 'Executed';
   const simType = isExecuted ? 'executed' : 'proposed';
 

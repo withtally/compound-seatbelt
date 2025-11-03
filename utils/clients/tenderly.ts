@@ -122,8 +122,12 @@ interface SimulationPayloadParams {
  * @param config Configuration object
  */
 export async function simulate(config: SimulationConfig) {
-  if (config.type === 'executed') return await simulateExecuted(config);
-  if (config.type === 'proposed') return await simulateProposedCompound(config);
+  if (config.type === 'executed') {
+    return await simulateExecuted(config);
+  }
+  if (config.type === 'proposed') {
+    return await simulateProposedCompound(config);
+  }
   return await simulateNew(config);
 }
 
@@ -135,12 +139,31 @@ async function simulateProposedCompound(config: SimulationConfigProposed): Promi
 
   // --- Get details about the proposal we're simulating ---
   const chainId = await publicClient.getChainId();
-  const blockNumberToUse = (await getLatestBlock(chainId)) - 3; // subtracting a few blocks to ensure tenderly has the block
-  const latestBlock = await publicClient.getBlock({ blockNumber: BigInt(blockNumberToUse) });
-  const blockRange = [0n, latestBlock.number];
   const governor = getGovernor(governorType, governorAddress);
   const timelock = await getTimelock(governorType, governorAddress);
   const proposal = await getProposal(governorType, governorAddress, proposalId);
+
+  // Get proposal deadline to ensure we simulate after voting ends
+  const proposalDeadline = await publicClient.readContract({
+    address: governorAddress,
+    abi: GOVERNOR_OZ_ABI,
+    functionName: 'proposalDeadline',
+    args: [proposalId],
+  });
+  const latestBlockNumber = BigInt(await getLatestBlock(chainId));
+
+  // Get the latest available block data (subtract a few blocks for safety)
+  const safeBlockNumber = latestBlockNumber - 3n;
+  const latestBlock = await publicClient.getBlock({ blockNumber: safeBlockNumber });
+
+  // Determine what block number to simulate at (must be after voting ends)
+  // If voting hasn't ended yet, simulate 10 blocks after deadline
+  // If voting has ended, use current block
+  const minSimBlock = proposalDeadline + 10n;
+  const simBlock = latestBlockNumber > proposalDeadline ? latestBlockNumber : minSimBlock;
+
+  // For simulation, we'll use the latest block's data but override the block number
+  const blockRange = [0n, safeBlockNumber];
 
   // Compound Governor uses OZ-style ABI and events
   const proposalCreatedEvents = await publicClient.getContractEvents({
@@ -178,9 +201,10 @@ async function simulateProposedCompound(config: SimulationConfigProposed): Promi
   // Set `from` arbitrarily.
   const from = DEFAULT_SIMULATION_ADDRESS;
 
-  // Use the next block after latest for simulation
-  const simBlock = latestBlock.number + 1n;
-  const simTimestamp = latestBlock.timestamp + 1n;
+  // Calculate simTimestamp based on simBlock (already calculated above)
+  // Estimate timestamp: add 12 seconds per block from latest known block
+  const blocksSinceLatest = simBlock - latestBlock.number;
+  const simTimestamp = latestBlock.timestamp + (blocksSinceLatest * 12n);
   const eta = simTimestamp; // set proposal eta to be equal to the timestamp we simulate at
 
   // Compute transaction hashes used by the Timelock
@@ -208,12 +232,27 @@ async function simulateProposedCompound(config: SimulationConfigProposed): Promi
   );
   timelockStorageObj[`_timestamps[${toHex(id)}]`] = simTimestamp.toString();
 
+  // Create formatted proposal early so we can use it in state overrides
+  const formattedProposal: ProposalEvent = {
+    id: proposalId,
+    proposalId,
+    proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_SIMULATION_ADDRESS,
+    startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
+    endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
+    description: proposalCreatedEvent.args.description ?? '',
+    targets: [...(proposalCreatedEvent.args.targets ?? [])],
+    values: [...values],
+    signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
+    calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
+  };
+
   const governorStateOverrides = buildCompoundGovernorStateOverrides({
     governorType,
     proposalId,
     votingTokenSupply,
     eta,
     simBlock,
+    proposal: formattedProposal,
     // No targets/values/signatures/calldatas for existing proposals
   });
 
@@ -257,19 +296,6 @@ async function simulateProposedCompound(config: SimulationConfigProposed): Promi
     executeInputs,
     saveIfFails: true, // Different for proposed
   });
-
-  const formattedProposal: ProposalEvent = {
-    id: proposalId,
-    proposalId,
-    proposer: proposalCreatedEvent.args.proposer ?? DEFAULT_SIMULATION_ADDRESS,
-    startBlock: proposalCreatedEvent.args.startBlock ?? 0n,
-    endBlock: proposalCreatedEvent.args.endBlock ?? 0n,
-    description: proposalCreatedEvent.args.description ?? '',
-    targets: [...(proposalCreatedEvent.args.targets ?? [])],
-    values: [...values],
-    signatures: [...(proposalCreatedEvent.args.signatures ?? [])],
-    calldatas: [...(proposalCreatedEvent.args.calldatas ?? [])],
-  };
 
   // Handle ETH transfers if needed
   handleETHValueRequirements(simulationPayload, values, from, timelock.address);
@@ -781,7 +807,8 @@ export async function handleCrossChainSimulations(
   };
 
   if (!result.sim.transaction.status) {
-    console.log('[CrossChainHandler] Source simulation failed, skipping destination checks.');
+    console.log('[CrossChainHandler] Source transaction reverted, skipping cross-chain destination checks.');
+    console.log('[CrossChainHandler] Main chain checks will still run on the reverted simulation.\n');
     return result;
   }
 
