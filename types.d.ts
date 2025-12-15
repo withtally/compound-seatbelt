@@ -185,6 +185,8 @@ export interface ExtractedCrossChainMessage {
   l2Value: string;
   /** @notice The address initiating the transaction on the destination chain (often a bridge contract or alias). Optional. */
   l2FromAddress?: Address;
+  /** @notice The original L1 sender address (for OP Stack, used to set xDomainMessageSender state). Optional. */
+  l1SenderAddress?: Address;
 }
 
 // --- Tenderly types, Request ---

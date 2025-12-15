@@ -13,6 +13,9 @@ const OPTIMISM_MESSENGERS: Record<string, Address> = {
   '60808': '0xE3d981643b806FB8030CDB677D6E60892E547EdA', // Bob
 };
 
+// L2CrossDomainMessenger address - same on all OP Stack chains (predeploy)
+const L2_CROSS_DOMAIN_MESSENGER: Address = '0x4200000000000000000000000000000000000007';
+
 // ABI for L1CrossDomainMessenger sendMessage function
 const SEND_MESSAGE_ABI = parseAbi([
   'function sendMessage(address _target, bytes _message, uint32 _minGasLimit)',
@@ -135,12 +138,13 @@ export function parseOptimismL1L2Messages(
       // Extract value from the call
       const l2Value = call.value || '0';
 
-      // Create the message
-      // TEMP: For Unichain testing, use an address that likely has ETH balance
-      const l2FromAddress =
-        destinationChainId === '130'
-          ? ('0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D' as Address) // Use Uniswap V2 Router for Unichain
-          : getAddress(call.from); // Preserve original sender for other chains
+      // For OP Stack chains, the L2 simulation should be called FROM the L2CrossDomainMessenger
+      // The bridge receiver contracts check that msg.sender == L2CrossDomainMessenger
+      // and then verify the L1 sender via xDomainMessageSender()
+      //
+      // We use the L2 messenger as the from address so the access control passes.
+      // The l1SenderAddress is stored for potential state overrides on xDomainMessageSender()
+      const l1SenderAddress = getAddress(call.from);
 
       const message: ExtractedCrossChainMessage = {
         bridgeType: 'OptimismL1L2',
@@ -148,7 +152,8 @@ export function parseOptimismL1L2Messages(
         l2TargetAddress: getAddress(targetAddress),
         l2InputData: messageData as Hex,
         l2Value: l2Value.toString(),
-        l2FromAddress,
+        l2FromAddress: L2_CROSS_DOMAIN_MESSENGER, // Use L2 messenger as caller
+        l1SenderAddress, // Store original L1 sender for state overrides
       };
 
       // Use both target address and calldata hash as key for deduplication

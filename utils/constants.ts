@@ -15,7 +15,8 @@ if (!TENDERLY_USER) throw new Error('TENDERLY_USER is not defined');
 if (!TENDERLY_PROJECT_SLUG) throw new Error('TENDERLY_PROJECT_SLUG is not defined');
 
 // Define the constants.
-export const BLOCK_GAS_LIMIT = 30_000_000;
+// Note: Increased from 30M to 60M to handle complex multi-action proposals
+export const BLOCK_GAS_LIMIT = 60_000_000;
 export const TENDERLY_BASE_URL = 'https://api.tenderly.co/api/v1';
 export const TENDERLY_ENCODE_URL = `${TENDERLY_BASE_URL}/account/${TENDERLY_USER}/project/${TENDERLY_PROJECT_SLUG}/contracts/encode-states`;
 export const TENDERLY_SIM_URL = `${TENDERLY_BASE_URL}/account/${TENDERLY_USER}/project/${TENDERLY_PROJECT_SLUG}/simulate`;

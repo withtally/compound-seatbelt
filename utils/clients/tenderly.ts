@@ -862,6 +862,27 @@ export async function handleCrossChainSimulations(
           save: false,
         };
 
+        // For OP Stack chains, add state overrides to set xDomainMessageSender
+        // This allows the bridge receiver to verify the L1 sender
+        if (message.bridgeType === 'OptimismL1L2' && message.l1SenderAddress) {
+          const L2_CROSS_DOMAIN_MESSENGER = '0x4200000000000000000000000000000000000007';
+          // The xDomainMsgSender slot in CrossDomainMessenger (slot 204 in namespaced storage)
+          // Storage layout: keccak256("CrossDomainMessenger") - 1 + 204
+          // For simplicity, we use the known slot: 0xcc (204 in decimal)
+          const XDOMAIN_MSG_SENDER_SLOT = '0x00000000000000000000000000000000000000000000000000000000000000cc';
+
+          destinationPayload.state_objects = {
+            [L2_CROSS_DOMAIN_MESSENGER]: {
+              storage: {
+                [XDOMAIN_MSG_SENDER_SLOT]: `0x000000000000000000000000${message.l1SenderAddress.slice(2).toLowerCase()}`,
+              },
+            },
+          };
+          console.log(
+            `[CrossChainHandler] Setting xDomainMessageSender override: ${message.l1SenderAddress}`,
+          );
+        }
+
         // Log the payload before sending
         console.log(
           `[CrossChainHandler] Sending L2 Simulation Payload (Chain ${destinationPayload.network_id}):`,
